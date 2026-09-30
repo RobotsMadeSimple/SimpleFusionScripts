@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BuildBook</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <input id="manualTitle" class="title-input" title="Manual title" spellcheck="false">
+    <button id="btnAssembled" class="tb-btn" title="Leave the step view and show the model normally (Esc)">
+      <svg viewBox="0 0 16 16"><path d="M8 1.5 14 4.8v6.4L8 14.5 2 11.2V4.8z M2 4.8 8 8l6-3.2 M8 8v6.5"/></svg>
+      <span>Assembled</span>
+    </button>
+    <button id="btnRefresh" class="tb-btn icon" title="Re-read the design (after editing parts)">
+      <svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9 M13.5 2.5v3h-3"/></svg>
+    </button>
+  </header>
+  <div id="busy" class="busy"><div></div></div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="steps" class="tab">Steps</button>
+    <button data-tab="step" class="tab" id="tabStep">Step</button>
+    <button data-tab="parts" class="tab">Parts <span id="unassignedCount" class="tab-count">0</span></button>
+    <button data-tab="export" class="tab">Export</button>
+    <button data-tab="settings" class="tab icon" title="Settings">
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2 M8 12.5v2 M1.5 8h2 M12.5 8h2 M3.4 3.4l1.4 1.4 M11.2 11.2l1.4 1.4 M3.4 12.6l1.4-1.4 M11.2 4.8l1.4-1.4"/></svg>
+    </button>
+  </nav>
+
+  <div id="error" class="msg error hidden"></div>
+  <div id="notice" class="notice hidden" title="Click to dismiss"></div>
+  <section id="warnings" class="warn hidden"></section>
+
+  <!-- ============================================================ Steps -->
+  <main class="pane" data-pane="steps">
+    <div class="pane-bar">
+      <button id="btnAddSection" class="btn primary small">+ Section</button>
+      <span class="hint-inline">&uarr;&darr; move between steps &middot; Esc assembled</span>
+    </div>
+    <div id="tree"></div>
+  </main>
+
+  <!-- ============================================================ Step -->
+  <main class="pane" data-pane="step">
+    <div id="noStep" class="empty-state">
+      <svg viewBox="0 0 16 16"><path d="M8 1.5 14 4.8v6.4L8 14.5 2 11.2V4.8z M2 4.8 8 8l6-3.2 M8 8v6.5"/></svg>
+      <p>No step open.</p>
+      <p class="sub">Open one from the <b>Steps</b> tab.</p>
+    </div>
+
+    <div id="stepPanel" class="hidden">
+      <div class="step-head">
+        <button id="btnPrevStep" class="tb-btn icon" title="Previous step (&uarr;)">
+          <svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg>
+        </button>
+        <div class="step-head-title">
+          <div class="crumb" id="stepCrumb"></div>
+          <div class="title" id="stepTitle">Step</div>
+        </div>
+        <span id="editBadge" class="badge hidden">Editing</span>
+        <button id="btnNextStep" class="tb-btn icon" title="Next step (&darr;)">
+          <svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></svg>
+        </button>
+      </div>
+
+      <!-- Explode moves -->
+      <section class="card">
+        <div class="card-head">
+          <h3>Explode moves</h3>
+          <div class="card-tools">
+            <button id="btnShowAll" class="btn link hidden" title="Show the step with every move again">Show all</button>
+            <button id="btnAddExplode" class="btn primary small" title="New move with the checked parts, or the Fusion selection. Goes after the move you're viewing.">+ Add move</button>
+          </div>
+        </div>
+        <ul id="explodes" class="explodes"></ul>
+        <p class="hint">Moves run top to bottom; a part in several moves continues from where it landed.
+          Click a move to see the step up to it. Blank distance = step default.</p>
+      </section>
+
+      <!-- Parts -->
+      <section class="card">
+        <div class="card-head">
+          <h3>Parts <span id="itemCount" class="count"></span></h3>
+          <div class="card-tools">
+            <button id="btnPick" class="btn small" title="Pick this step's parts on the full model: click selects, hover + H hides">Pick parts&hellip;</button>
+            <button id="btnLines" class="btn small" title="Click trail lines to hide them">Edit lines&hellip;</button>
+          </div>
+        </div>
+        <div class="items-head">
+          <label class="check"><input type="checkbox" id="checkAll"> All</label>
+          <div class="bulk">
+            <button id="btnTrailOn" class="btn link" title="Trail lines on for checked parts, in every move">Lines on</button>
+            <button id="btnTrailOff" class="btn link" title="Trail lines off for checked parts, in every move">Lines off</button>
+            <button id="btnReset" class="btn link" title="Take checked parts out of every explode move (they stay in the step)">Unexplode</button>
+            <button id="btnRemove" class="btn link danger" title="Remove checked parts from this step">Remove</button>
+          </div>
+        </div>
+        <ul id="items" class="list"></ul>
+        <button id="btnAddSelected" class="btn link" title="Add the parts currently selected in the canvas or browser">+ Add current Fusion selection</button>
+      </section>
+
+      <!-- View & image -->
+      <section class="card">
+        <div class="card-head"><h3>View &amp; image</h3></div>
+        <div class="view-row">
+          <div class="thumb big" id="stepThumb"></div>
+          <div class="view-actions">
+            <button id="btnSaveView" class="btn" title="Save the current camera as this step's view; opening the step goes there">Save view</button>
+            <button id="btnGoView" class="btn" title="Go back to this step's saved view">Go to view</button>
+            <button id="btnExportStep" class="btn primary" title="Save this step as a PNG in the export folder">Export PNG</button>
+          </div>
+        </div>
+        <p class="hint" id="viewHint"></p>
+      </section>
+
+      <!-- Options -->
+      <section class="card">
+        <div class="card-head"><h3>Step options</h3></div>
+        <label class="check" title="Its parts are prepared here but installed later: in the steps after it they're treated as unassigned until a normal step includes them.">
+          <input type="checkbox" id="stepPrep"> Preparation step</label>
+        <div class="grid two">
+          <div><label for="ctxEarlier">Earlier steps</label><select id="ctxEarlier"></select></div>
+          <div><label for="ctxLater">Later steps</label><select id="ctxLater"></select></div>
+        </div>
+        <label for="stepDistance">Default explode distance</label>
+        <div class="with-unit">
+          <input id="stepDistance" title="Moves with a blank distance follow this. Leave blank to use the manual default.">
+          <span class="unit" data-units></span>
+        </div>
+        <label for="notes">Notes</label>
+        <textarea id="notes" rows="3" placeholder="Instructions shown with this step in the manual"></textarea>
+      </section>
+    </div>
+  </main>
+
+  <!-- ============================================================ Parts (unassigned) -->
+  <main class="pane" data-pane="parts">
+    <p class="hint">Parts not in any step yet. Check some and add them to the open step.</p>
+    <div class="pane-bar">
+      <input id="unassignedFilter" class="grow" placeholder="Filter parts">
+      <button id="btnAddChecked" class="btn primary small">+ Add to step</button>
+    </div>
+    <ul id="unassigned" class="list"></ul>
+  </main>
+
+  <!-- ============================================================ Export -->
+  <main class="pane" data-pane="export">
+    <section class="card">
+      <div class="card-head"><h3>Images</h3></div>
+      <p class="hint">Each step exports as <b>Section N - Step N - Step name.png</b> at its saved view
+        (step numbers count within their section).</p>
+      <div class="grid two">
+        <div><label for="setRatio">Crop ratio</label><select id="setRatio" title="Shape of every exported image. Match viewport = what you see."></select></div>
+        <div><label for="setImgW">Width (px)</label><input id="setImgW" type="number" min="200" max="8000" step="100" title="Height follows the crop ratio"></div>
+      </div>
+      <label class="check"><input type="checkbox" id="setTransparent"> Transparent background</label>
+      <label class="check"><input type="checkbox" id="setShowFrame"> Show crop frame on screen</label>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3>Folder</h3></div>
+      <div class="folder" id="exportFolder"></div>
+      <div class="inline-actions">
+        <button id="btnChangeFolder" class="btn link">Change&hellip;</button>
+        <button id="btnOpenFolder" class="btn link">Open folder</button>
+      </div>
+      <label class="check"><input type="checkbox" id="setAskFolder"> Ask for a folder on every export</label>
+    </section>
+    <div class="actions-row">
+      <button id="btnExportAll" class="btn primary" title="Save every step's image to the folder above">Export all steps</button>
+      <button id="btnExportAllTo" class="btn" title="Pick a folder, then save every step's image there">Export all to&hellip;</button>
+    </div>
+  </main>
+
+  <!-- ============================================================ Settings -->
+  <main class="pane" data-pane="settings">
+    <section class="card">
+      <div class="card-head"><h3>Step views</h3></div>
+      <div class="grid two">
+        <div><label for="setEarlier">Earlier steps</label><select id="setEarlier"></select></div>
+        <div><label for="setLater">Later steps</label><select id="setLater"></select></div>
+      </div>
+      <div class="grid two">
+        <div><label for="setUnassigned">Unassigned parts</label><select id="setUnassigned"></select></div>
+        <div><label for="setGhost">Ghost opacity</label><input id="setGhost" type="number" min="0.05" max="0.9" step="0.05"></div>
+      </div>
+      <label for="setDistance">Default explode distance</label>
+      <div class="with-unit"><input id="setDistance"><span class="unit" data-units></span></div>
+      <label class="check"><input type="checkbox" id="setEdges"> Draw edges on exploded parts</label>
+      <label class="check" title="e.g. &quot;ISO 4762 Socket Head Cap Screw M3 x 12&quot; shows as M3x12 SHCS; the full name stays underneath">
+        <input type="checkbox" id="setShortHw"> Short hardware names (M3x12 SHCS)</label>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3>Trail lines</h3></div>
+      <div class="grid three">
+        <div><label for="setTrailColor">Colour</label><input id="setTrailColor" type="color"></div>
+        <div><label for="setTrailWeight">Weight</label><input id="setTrailWeight" type="number" min="0.5" max="6" step="0.5"></div>
+        <div><label for="setTrailStyle">Style</label>
+          <select id="setTrailStyle">
+            <option value="dashed">Dashed</option><option value="center">Center</option>
+            <option value="dotted">Dotted</option><option value="solid">Solid</option>
+          </select>
+        </div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3>Manual</h3></div>
+      <div class="actions-row">
+        <button id="btnExportManual" class="btn" title="Save this manual (sections, steps, explodes, views, settings) to a .json file">Export manual</button>
+        <button id="btnImportManual" class="btn" title="Replace this design's manual with one from a .json file, e.g. onto an older version">Import manual</button>
+      </div>
+      <button id="btnLeftovers" class="btn link" title="Delete stray exploded/ghost graphics left in the canvas. Never touches the model.">Remove leftover graphics</button>
+    </section>
+    <p class="hint footer-hint">The model never moves: exploded views are drawn on top. Click <b>Assembled</b> before editing parts.</p>
+  </main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# BuildBook runtime files: local to each machine and may show private designs
+BuildBook/logs/
+BuildBook/thumbs/
+BuildBook/cache/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
