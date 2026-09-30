@@ -61,3 +61,6 @@
 
 .b-onetag { flex: none; font-size: 9px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted);
             border: 1px solid var(--line); border-radius: 8px; padding: 0 5px; margin-left: 4px; }
+
+.b-seccopy { opacity: 0; margin-left: 4px; padding: 0 2px; }
+.b-sec:hover .b-seccopy { opacity: 1; }

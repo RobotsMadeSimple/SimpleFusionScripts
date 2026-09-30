@@ -15,6 +15,8 @@
     up: '<svg viewBox="0 0 16 16"><path d="m4 10 4-4 4 4"/></svg>',
     down: '<svg viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg>',
     one: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M7 6l1.5-1v6.5"/></svg>',
+    copy: '<svg viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>',
+    check: '<svg viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7"/></svg>',
     box: '<svg viewBox="0 0 16 16"><path d="M8 1.5l6 3v7l-6 3-6-3v-7zM2 4.5l6 3 6-3M8 7.5v7"/></svg>'
   };
   var HIDEABLE = ['partNumber', 'description', 'material', 'mass'];
@@ -44,6 +46,7 @@
           '<button class="btn small b-mass" data-b="mass">Calculate masses</button>' +
           '<span class="b-addhost"></span>' +
           '<span class="b-menuwrap"><button class="btn small" data-b="menu">Columns</button><div class="b-menu hidden"></div></span>' +
+          '<button class="btn small" data-b="copyall" title="Copy the BOM (as shown) to paste into Excel / Sheets">Copy</button>' +
           '<button class="btn small" data-b="export">Export CSV</button>' +
         '</div>' +
         '<div class="b-sum sub"></div>' +
@@ -82,6 +85,43 @@
       return !(HIDEABLE.indexOf(c.id) >= 0 && hidden[c.id]);
     });
   }
+  // ---- copy (tab-separated: pastes into Excel / Sheets as columns). What's shown: filter, sort, columns.
+  function shownSections(onlyId) {
+    var words = filter.toLowerCase().split(/\s+/).filter(Boolean);
+    return bom.sections.filter(function (s) { return !onlyId || s.id === onlyId; }).map(function (s) {
+      var rows = s.rows.filter(function (r) {
+        if (!words.length) return true;
+        var hs = haystack(r);
+        return words.every(function (w) { return hs.indexOf(w) >= 0; });
+      });
+      return { name: s.name, rows: sortedRows(rows) };
+    }).filter(function (s) { return s.rows.length; });
+  }
+  function tsvCell(v) { return String(v == null ? '' : v).replace(/[\t\r\n]+/g, ' '); }
+  function bomText(onlyId) {
+    var cols = visibleColumns(), withSection = bom.grouped && !onlyId;
+    var lines = [(withSection ? ['Section'] : []).concat(cols.map(function (c) { return c.name; })).map(tsvCell).join('\t')];
+    shownSections(onlyId).forEach(function (s) {
+      s.rows.forEach(function (r) {
+        var cells = cols.map(function (c) { return c.id === 'name' ? (r.hw || r.name) : cellText(r, c); });
+        lines.push((withSection ? [s.name] : []).concat(cells).map(tsvCell).join('\t'));
+      });
+    });
+    return lines.join('\r\n') + '\r\n';
+  }
+  function copyRows(onlyId, btn) {
+    var text = bomText(onlyId);
+    var label = btn.innerHTML;
+    function done() {
+      btn.innerHTML = btn.classList.contains('icon-btn') ? ICON.check : 'Copied';
+      setTimeout(function () { if (btn.isConnected) btn.innerHTML = label; }, 1200);
+    }
+    // Always through Python: in Fusion's panel the browser's clipboard calls report success
+    // without copying anything.
+    BP.send('copyText', { text: text, done: onlyId ? 'Section copied.' : 'BOM copied.' });
+    done();
+  }
+
   function cellText(row, col) {
     if (col.custom) return (row.values && row.values[col.id]) || '';
     if (col.id === 'mass') return fmtMass(row.mass);
@@ -175,6 +215,7 @@
       if (bom.grouped) {
         body += '<tr class="b-sec" data-sec="' + esc(sec.id) + '"><td colspan="' + cols.length + '"><div class="b-sechead">' +
           (open ? ICON.chevD : ICON.chevR) + '<span class="b-secname">' + esc(sec.name) + '</span>' +
+          '<button class="icon-btn b-seccopy" data-b="copysec" title="Copy this section">' + ICON.copy + '</button>' +
           '<span class="b-secqty">' + sub + '</span></div></td></tr>';
       }
       if (!open) return;
@@ -343,6 +384,8 @@
       return;
     }
     if (act === 'export') { BP.send('bomExport', {}); return; }
+    if (act === 'copyall') { copyRows(null, btn); return; }
+    if (act === 'copysec') { copyRows(btn.closest('tr').getAttribute('data-sec'), btn); return; }
     if (act === 'menu') { menuEl.classList.toggle('hidden'); return; }
     if (act === 'addcol') { addColumn(); return; }
     if (act === 'delcol') {

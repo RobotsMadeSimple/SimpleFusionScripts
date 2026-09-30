@@ -22,7 +22,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from .lib import (actions, analysis, bom, collect, components, faces, features, hardware, layout, log,
+from .lib import (actions, analysis, bom, clipboard, collect, components, faces, features, hardware, layout, log,
                   textselect, visibility)
 
 PALETTE_ID = "browserPlusPalette"
@@ -304,6 +304,15 @@ class Controller:
             self._save_layout()
         elif action == "bomExport":
             self._export_bom()
+        elif action == "copyText":          # the panel couldn't reach the clipboard itself
+            try:
+                text = data.get("text") or ""
+                clipboard.copy(text)
+                log.info("copied {} lines to the clipboard".format(text.count("\n")))
+                self._notice = data.get("done") or "Copied."
+            except Exception:
+                log.error("copy to clipboard")
+                self._notice = "Couldn't copy to the clipboard (see the log)."
         else:
             return False
         self.push_state()
