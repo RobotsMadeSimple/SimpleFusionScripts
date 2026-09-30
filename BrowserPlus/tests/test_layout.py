@@ -119,6 +119,22 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(lay["values"], {"Screw": {}})
 
 
+class FeatureTreeTests(unittest.TestCase):
+    def test_feature_folders_and_healing(self):
+        lay = layout.empty()
+        tree = layout.feature_tree(lay, "comp")
+        f = layout.add_folder(tree, "Base")
+        self.assertTrue(layout.assign_features(tree, ["t1", "t2"], f, {"t1": "Extrude1", "t2": "Sketch1"}))
+        self.assertFalse(layout.assign_features(tree, ["t3"], "nope"))
+        items = [{"id": "t1", "name": "Extrude1"}, {"id": "new2", "name": "Sketch1"}, {"id": "t3", "name": "Fillet1"}]
+        spots = layout.place_features(items, tree)
+        self.assertEqual(spots, {"t1": f, "new2": f, "t3": ""})     # t2 -> new2 by name
+        layout.delete_folder(tree, f)
+        self.assertEqual(layout.place_features(items, tree)["t1"], "")
+        self.assertIs(layout.feature_tree(lay, "comp"), tree)
+        self.assertEqual(layout.load(layout.dump(lay))["featureTrees"]["comp"]["folders"], [])
+
+
 class BomTests(unittest.TestCase):
     def setUp(self):
         self.lay = layout.empty()

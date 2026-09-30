@@ -1,0 +1,26 @@
+/* Browser+ part mode (feature tree). Namespaced f-; rows reuse t-row from tree.css. */
+
+.f-bar { position: sticky; top: 0; z-index: 3; background: var(--bg); margin: 0 -8px 4px; padding: 8px 8px 4px; }
+.f-head { font-size: 11px; color: var(--muted); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f-bar .search { margin-bottom: 6px; }
+.f-bar-row { display: flex; align-items: center; gap: 10px; }
+
+.f-body { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 0; min-height: 40px; }
+
+.f-type { color: var(--muted); font-size: 10px; flex: none; margin-left: 2px; }
+.f-health { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--warning); }
+.f-err .f-health { background: var(--danger); }
+.f-err .t-name { color: var(--danger); }
+.f-wrn .t-name { color: var(--warning); }
+
+.f-supp .t-name, .f-supp .t-ico { opacity: .45; }
+.f-supp .t-name { text-decoration: line-through; }
+.f-rolled .t-name, .f-rolled .t-ico, .f-rolled .f-type { opacity: .5; font-style: italic; }
+
+.f-nested .f-ico { opacity: .8; }
+.f-item .f-ico svg { width: 16px; height: 16px; }
+.f-bar .t-confirm-text { white-space: normal; }
+
+/* Sketches under a feature: an extra step in, so they read as the feature's children
+   (their eye would otherwise sit right under the feature's icon). */
+.t-row.f-nested { padding-left: calc(var(--d, 0) * 18px + 22px); }

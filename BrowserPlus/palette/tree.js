@@ -575,7 +575,7 @@
 
   // F2 renames the selected folder (capture, so app.js's F2 handler for joints doesn't also fire).
   document.addEventListener('keydown', function (e) {
-    if (BP.activeTab() !== 'tree' || drag) return;
+    if (BP.activeTab() !== 'tree' || drag || partMode()) return;
     var tag = e.target && e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (e.key === 'F2' && sel.folder && model && model.fmap[sel.folder] && !model.fmap[sel.folder].f.auto) {
@@ -605,7 +605,7 @@
     });
   }
   document.addEventListener('keydown', function (e) {
-    if ((e.key !== 'Delete' && e.key !== 'Backspace') || BP.activeTab() !== 'tree' || drag) return;
+    if ((e.key !== 'Delete' && e.key !== 'Backspace') || BP.activeTab() !== 'tree' || drag || partMode()) return;
     var tag = e.target && e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     var paths = Object.keys(sel.paths);
@@ -617,7 +617,7 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') cancelDelete();
-    if (e.key !== 'Escape' || BP.activeTab() !== 'tree' || drag) return;
+    if (e.key !== 'Escape' || BP.activeTab() !== 'tree' || drag || partMode()) return;
     var tag = e.target && e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (selCount() || sel.folder) { sel.paths = {}; sel.folder = null; sel.anchor = null; if (model) updateSelection(); }
@@ -764,13 +764,19 @@
 
   // ------------------------------------------------------------ wiring
 
+  // Part mode (features.js takes the Tree tab): hide the parts tree, and its keys do nothing.
+  function partMode() { var s = BP.state(); return !!(s && s.mode === 'part'); }
+  function showParts(on) { bar.classList.toggle('hidden', !on); body.classList.toggle('hidden', !on); }
+
   BP.onRender(function (state, tab) {
     S = state;
+    showParts(state.mode !== 'part');
+    if (state.mode === 'part') return;
     if (tab === 'tree') renderTree(); else dirty = true;
   });
   BP.onTab(function (tab) {
     if (tab !== 'tree') return;
     if (!S) S = BP.state();
-    if (S && S.parts && (dirty || !rendered)) renderTree();
+    if (S && S.parts && S.mode !== 'part' && (dirty || !rendered)) renderTree();
   });
 })();

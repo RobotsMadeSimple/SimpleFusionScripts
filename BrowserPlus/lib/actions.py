@@ -62,6 +62,34 @@ def edit_candidates(kind):
     return out
 
 
+_all_command_ids = None
+
+
+def feature_edit_candidates(ui, entity):
+    """Edit commands for a feature, best first: learned from its right-click menu, then Fusion's
+    naming ("FusionDcFilletEditCommand", "FusionExtrudeEditCommand"), then any command named like it."""
+    global _all_command_ids
+    object_type = entity.objectType
+    short = object_type.split("::")[-1]
+    if short.endswith("Feature"):
+        short = short[:-len("Feature")]
+    out = list(learned().get("feature:" + object_type, []))
+    # Newer features have a "FusionDc..." editor (fillet, hole); the plain one then opens the wrong or
+    # no dialog. Features without a Dc editor (extrude) use "Fusion<Type>EditCommand".
+    out += ["FusionDc{}EditCommand".format(short), "Fusion{}EditCommand".format(short),
+            "{}EditCommand".format(short), "Fusion{}FeatureEditCommand".format(short)]
+    if _all_command_ids is None:
+        defs = ui.commandDefinitions
+        _all_command_ids = [defs.item(i).id for i in range(defs.count)]
+    low = short.lower()
+    out += sorted((c for c in _all_command_ids if low in c.lower() and "edit" in c.lower()), key=len)
+    existing = []
+    for cid in dict.fromkeys(out):
+        if ui.commandDefinitions.itemById(cid) is not None:
+            existing.append(cid)
+    return existing
+
+
 def _menu_command_ids(controls, visible_only=True):
     ids = []
     for i in range(controls.count):
@@ -134,7 +162,10 @@ def learn_from_menu(args, app=None):
         timeline_object = adsk.fusion.TimelineObject.cast(ent)
         if timeline_object is not None:                  # right-click on the timeline
             ent = timeline_object.entity
-        kind = KIND_BY_TYPE.get(getattr(ent, "objectType", ""))
+        object_type = getattr(ent, "objectType", "")
+        kind = KIND_BY_TYPE.get(object_type)
+        if kind is None and object_type.endswith("Feature"):
+            kind = "feature:" + object_type          # part mode: each feature type has its own editor
         if kind:
             kinds.add(kind)
     if len(kinds) != 1:

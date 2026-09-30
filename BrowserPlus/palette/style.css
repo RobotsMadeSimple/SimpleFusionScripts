@@ -89,6 +89,12 @@ input[type=checkbox] { accent-color: var(--accent); margin: 0; min-height: 0; wi
 .mate-bar .mate-label { color: var(--muted); }
 .mate-bar .spacer { flex: 1; }
 .mate-bar.on { background: var(--accent-soft); }
+/* Part mode (a one-part design or an activated component): only Tree, Health and BOM. */
+body[data-mode="part"] .assembly-only, body:not([data-mode="part"]) .part-only { display: none !important; }
+.feat-problem { display: flex; gap: 6px; align-items: baseline; padding: 4px 2px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+.feat-problem:hover { background: var(--hover); }
+.feat-problem .dot { flex: none; }
+.feat-problem .sub { margin-left: auto; }
 body[data-tab="tree"] .mate-bar:not(.on), body[data-tab="bom"] .mate-bar:not(.on) { display: none; }   /* joints tabs only */
 .mate-bar.on .mate-label { color: var(--accent); font-weight: 600; }
 .empty-state { text-align: center; color: var(--muted); padding: 32px 12px; }

@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="tree.css">
 <link rel="stylesheet" href="bom.css">
+<link rel="stylesheet" href="features.css">
 </head>
 <body>
   <header class="top">
@@ -20,16 +21,16 @@
 
   <nav class="tabs" id="tabs">
     <button data-tab="tree" class="tab">Tree</button>
-    <button data-tab="part" class="tab">Part</button>
-    <button data-tab="all" class="tab">All <span id="countAll" class="tab-count">0</span></button>
+    <button data-tab="part" class="tab assembly-only">Part</button>
+    <button data-tab="all" class="tab assembly-only">All <span id="countAll" class="tab-count">0</span></button>
     <button data-tab="health" class="tab">Health <span id="countHealth" class="tab-count">0</span></button>
-    <button data-tab="map" class="tab">Map</button>
+    <button data-tab="map" class="tab assembly-only">Map</button>
     <button data-tab="bom" class="tab">BOM</button>
   </nav>
 
   <div id="error" class="msg error hidden"></div>
   <div id="notice" class="notice hidden" title="Click to dismiss"></div>
-  <div class="mate-bar" title="How a relationship is shown when you click it">
+  <div class="mate-bar assembly-only" title="How a relationship is shown when you click it">
     <span class="mate-label">Relationship view</span>
     <label class="check" title="Show the two mated parts see-through, so the coloured faces show where they touch"><input type="checkbox" id="mateGhost"> See-through</label>
     <label class="check" title="Hide every part except the two it mates"><input type="checkbox" id="mateIsolate"> Hide other parts</label>
@@ -88,16 +89,21 @@
 
   <!-- ============================================================ Health -->
   <main class="pane" data-pane="health">
-    <section class="card">
+    <section class="card part-only">
+      <div class="card-head"><h3>Features with errors &amp; warnings</h3></div>
+      <p class="hint">Red and yellow in the timeline. Click one to select it in Fusion.</p>
+      <div id="healthFeatures"></div>
+    </section>
+    <section class="card assembly-only">
       <div class="card-head"><h3>Errors &amp; warnings</h3></div>
       <div id="healthProblems"></div>
     </section>
-    <section class="card">
+    <section class="card assembly-only">
       <div class="card-head"><h3>Floating parts</h3></div>
       <p class="hint">Not grounded and not held by any joint or relationship (nor is a parent assembly), so they can be dragged freely.</p>
       <ul id="healthFloating" class="list"></ul>
     </section>
-    <section class="card">
+    <section class="card assembly-only">
       <div class="card-head"><h3>Joined more than once</h3></div>
       <p class="hint">Part pairs held by more than one joint or relationship: often a leftover or a conflict.</p>
       <div id="healthDuplicates"></div>
@@ -128,5 +134,6 @@
 <script src="app.js"></script>
 <script src="tree.js"></script>
 <script src="bom.js"></script>
+<script src="features.js"></script>
 </body>
 </html>

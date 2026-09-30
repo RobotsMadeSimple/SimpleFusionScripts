@@ -32,6 +32,11 @@ deleted, or rolled to in the timeline ("Roll to end" returns). Clicking a
 relationship shows its mated faces in colour, with the parts see-through and,
 optionally, everything else hidden.
 
+- **Part mode**: in a one-part design, or with a component activated in an
+  assembly, the Tree shows that component's features in timeline order with the
+  sketches each one uses nested inside, in folders of your own; rename, suppress,
+  roll to, show/hide sketches, delete (one Ctrl+Z to undo). Only Tree, Health
+  (features with errors or warnings) and BOM (the bodies) are shown.
 - **BOM**: a parts list with quantities (one line per part used), grouped by
   your folders or flat, with part number, description, material, mass on
   request, and columns of your own (vendor, cost, notes...) saved in the design.
@@ -57,6 +62,7 @@ lib/bom.py            the parts list and CSV (pure Python)
 lib/hardware.py       short hardware names and kinds (shared with BuildBook)
 lib/components.py     per-component facts (part number, material, mass), cached
 lib/visibility.py     temporary hiding that restores exactly what it changed
-palette/              the panel (app.js + tree.js + bom.js, with their CSS)
+lib/features.py       part mode: the active component's features and the sketches they use
+palette/              the panel (app.js + tree.js + features.js + bom.js, with their CSS)
 tests/                python -m unittest discover -s tests
 ```

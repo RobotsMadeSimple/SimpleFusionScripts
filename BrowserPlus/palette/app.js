@@ -11,7 +11,8 @@
   var $ = function (id) { return document.getElementById(id); };
 
   var KIND_LABEL = { joint: 'Joint', asBuilt: 'As-built', constraint: 'Relation', rigidGroup: 'Rigid', motionLink: 'Link' };
-  var NO_BUSY = ['highlight', 'selectPart', 'zoom', 'edit', 'ready', 'follow', 'mateView', 'clearMates'];
+  var NO_BUSY = ['highlight', 'selectPart', 'zoom', 'edit', 'ready', 'follow', 'mateView', 'clearMates',
+                 'selectParts', 'featSelect', 'featEdit'];   // no state comes back for these
   var ICON = {
     zoom: '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5M5 7h4M7 5v4"/></svg>',
     rename: '<svg viewBox="0 0 16 16"><path d="M2.5 4.5h6M5.5 4.5v7M11.5 3v10M10 3h3M10 13h3"/></svg>',
@@ -90,6 +91,9 @@
       return;
     }
     $('error').classList.add('hidden');
+    var part = state.mode === 'part';
+    document.body.setAttribute('data-mode', part ? 'part' : 'assembly');
+    if (part && ['part', 'all', 'map'].indexOf(activeTab) >= 0) showTab('tree');
     byId = {};
     state.records.forEach(function (r) { byId[r.id] = r; });
     if (activeRec && !byId[activeRec]) activeRec = null;
@@ -99,8 +103,20 @@
       (s.warning ? ' <span class="warn">' + s.warning + ' warning' + (s.warning > 1 ? 's' : '') + '</span>' : '');
     $('countAll').textContent = s.total;
     var issues = state.problems.length + state.floating.length + state.duplicates.length;
+    var featProblems = part ? state.features.items.filter(function (i) { return i.health !== 'ok'; }) : [];
+    if (part) {
+      issues = featProblems.length;
+      var nf = state.features.items.length;
+      $('summary').textContent = state.component + ' · ' + nf + ' item' + (nf === 1 ? '' : 's');
+    }
     $('countHealth').textContent = issues;
-    $('countHealth').classList.toggle('bad', state.problems.length > 0);
+    $('countHealth').classList.toggle('bad', part ? featProblems.some(function (i) { return i.health === 'error'; })
+                                                  : state.problems.length > 0);
+    $('healthFeatures').innerHTML = featProblems.length ? featProblems.map(function (i) {
+      return '<div class="feat-problem" data-feat="' + esc(i.id) + '"><span class="dot ' + i.health + '"></span>' +
+        '<span><b>' + esc(i.name) + '</b><br><span class="sub">' + esc(i.message || i.health) + '</span></span>' +
+        '<span class="sub">' + esc(i.type) + '</span></div>';
+    }).join('') : '<div class="sub">No errors or warnings.</div>';
     $('follow').checked = !!state.follow;
     if (state.notice) {
       $('notice').textContent = state.notice;
@@ -343,6 +359,10 @@
   });
 
   $('notice').addEventListener('click', function () { $('notice').classList.add('hidden'); });
+  $('healthFeatures').addEventListener('click', function (e) {
+    var row = e.target.closest('[data-feat]');
+    if (row) send('featSelect', { ids: [row.getAttribute('data-feat')] });
+  });
   $('btnRefresh').addEventListener('click', function () { send('refresh'); });
   $('btnRollEnd').addEventListener('click', function () { send('rollEnd'); });
   $('follow').addEventListener('change', function (e) { send('follow', { on: e.target.checked }); });

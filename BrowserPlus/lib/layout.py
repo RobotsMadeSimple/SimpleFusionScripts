@@ -10,8 +10,12 @@ attributes (group "BrowserPlus", name "layout"), so it travels with the file.
       "hardwareAuto": true,
       "columns": [{"id": "c1", "name": "Vendor"}],                      # BOM columns of your own
       "values": {"<component id>": {"c1": "McMaster"}},                  # their values, per component
-      "split": ["<component id>"]      # assemblies listed piece by piece in the BOM (the rest count as one part)
+      "split": ["<component id>"],     # assemblies listed piece by piece in the BOM (the rest count as one part)
+      "featureTrees": {"<component id>": {"folders": [...], "items": {"<feature id>": {"folder", "name"}}}}
     }
+
+Part mode (lib/features.py) keeps a folder tree per component in "featureTrees", with the
+same folder functions (they take that sub-tree in place of the layout).
 
 Where a part shows (`place`):
 1. an explicit item puts it in that folder ("" = top level), pulled out of its parent assembly;
@@ -35,7 +39,7 @@ VERSION = 1
 
 def empty():
     return {"version": VERSION, "folders": [], "items": {}, "hardwareAuto": True, "columns": [], "values": {},
-            "split": []}
+            "split": [], "featureTrees": {}}
 
 
 def load(text):
@@ -77,7 +81,7 @@ def folder(layout, folder_id):
 
 
 def new_id(layout, prefix):
-    taken = _ids(layout) | {c["id"] for c in layout["columns"]}
+    taken = _ids(layout) | {c["id"] for c in layout.get("columns", [])}
     n = 1
     while "{}{}".format(prefix, n) in taken:
         n += 1
@@ -261,6 +265,53 @@ def folder_trail(folder_id, folders):
         names.append(by_id[folder_id]["name"])
         folder_id = by_id[folder_id]["parent"]
     return " › ".join(reversed(names))
+
+
+# ------------------------------------------------------------ part mode: feature folders
+
+def feature_tree(layout, component_key):
+    """The folder tree of one component's features (created on first use)."""
+    tree = layout.setdefault("featureTrees", {}).setdefault(component_key, {})
+    tree.setdefault("folders", [])
+    tree.setdefault("items", {})
+    return tree
+
+
+def assign_features(tree, ids, folder_id, names=None):
+    """Put features / sketches in a folder (TOP = top level); None = back to the top level."""
+    names = names or {}
+    if folder_id is not None and folder_id != TOP and folder(tree, folder_id) is None:
+        return False
+    for fid in ids:
+        if folder_id is None or folder_id == TOP:
+            tree["items"].pop(fid, None)
+        else:
+            tree["items"][fid] = {"folder": folder_id, "name": names.get(fid, "")}
+    return True
+
+
+def place_features(items, tree):
+    """{id: folder id or TOP} for every feature item, healing ids that changed (same name).
+
+    items: [{"id", "name"}] (features.collect). Stored ids no longer present are matched
+    by name to a present item nobody claims; unmatched ones are kept (undo may bring them back).
+    """
+    ids = {i["id"] for i in items}
+    stored = tree.get("items", {})
+    by_name = {}
+    for item in items:
+        by_name.setdefault(item["name"], []).append(item["id"])
+    for old in [k for k in stored if k not in ids]:
+        name = stored[old].get("name")
+        free = [i for i in by_name.get(name, []) if i not in stored]
+        if name and len(free) == 1:
+            stored[free[0]] = stored.pop(old)
+    folders = _ids(tree)
+    out = {}
+    for item in items:
+        entry = stored.get(item["id"])
+        out[item["id"]] = entry["folder"] if entry and entry.get("folder") in folders else TOP
+    return out
 
 
 # ------------------------------------------------------------ BOM columns

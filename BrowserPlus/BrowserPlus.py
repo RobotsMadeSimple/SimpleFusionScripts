@@ -22,7 +22,8 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from .lib import actions, analysis, bom, collect, components, faces, hardware, layout, log, textselect, visibility
+from .lib import (actions, analysis, bom, collect, components, faces, features, hardware, layout, log,
+                  textselect, visibility)
 
 PALETTE_ID = "browserPlusPalette"
 PALETTE_NAME = "Browser+"
@@ -63,6 +64,16 @@ class Controller:
         self.isolated = None        # what's isolated (label for the panel)
         self._filling = False       # a background details read is queued
         self._to_delete = []        # part paths for the delete command
+        self._delete_features = []  # or feature ids (part mode)
+        # Part mode (lib/features.py): the active component's features, read when it changes.
+        self.features, self.feature_entities = [], {}
+        self._feature_key = None
+        self._features_dirty = True
+        self._body_mass = {}
+        self._last_mode = None
+        # Clicking a feature rolls the timeline to it; this is where the marker was before
+        # (None = not rolled by a click), put back by roll_home().
+        self._roll_home, self._rolled_ent, self._rolled_at = None, None, 0.0
 
     def design(self):
         return adsk.fusion.Design.cast(self.app.activeProduct)
@@ -75,6 +86,7 @@ class Controller:
             self.records, self.parts, self.entities = [], [], {}
             return
         if self.dirty or force:
+            self._features_dirty = True
             self.info.set_document(collect._document_key(design))
             with log.timed("collect"):
                 self.records, self.parts, self.entities = collect.collect(design, self.info)
@@ -265,6 +277,12 @@ class Controller:
             self.bom_open = bool(data.get("open", True))
             if "group" in data:
                 self.bom_group = bool(data.get("group"))
+        elif action == "bomMass" and self._feature_key is not None and features.mode(self.design())[0] == "part":
+            for body, _ in features.bodies(features.mode(self.design())[1]):
+                try:
+                    self._body_mass["body:" + body.name] = body.physicalProperties.mass
+                except Exception:
+                    log.error("mass of body " + body.name)
         elif action == "bomMass":
             with log.timed("masses"):
                 for key, comp in self.info.components().items():
@@ -298,6 +316,39 @@ class Controller:
                 tokens[occ.fullPathName] = collect._safe(lambda: occ.entityToken, "") or ""
         if not layout.assign(self.layout, paths, folder_id, tokens):
             self._notice = "Parts can't be put in the automatic Hardware folders."
+
+    def run_delete(self):
+        """Inside the delete command: parts, or (part mode) features and sketches."""
+        if self._delete_features:
+            self.delete_features()
+        else:
+            self.delete_parts()
+
+    def delete_features(self):
+        ids = self._delete_features
+        self._delete_features = []
+        chosen = [(fid, self.feature_entities.get(fid)) for fid in ids]
+        order = {i["id"]: i["index"] for i in self.features}
+        chosen.sort(key=lambda pair: -order.get(pair[0], 0))     # latest first: fewer broken references
+        deleted, failed = [], []
+        for fid, ent in chosen:
+            name = collect._safe(lambda: ent.name, fid)
+            try:
+                if ent is not None and ent.isValid and ent.deleteMe():
+                    deleted.append(name)
+                else:
+                    failed.append(name)
+            except Exception:
+                log.error("delete " + str(name))
+                failed.append(name)
+        log.info("deleted features: {}; failed: {}".format(", ".join(deleted), ", ".join(failed)))
+        self._notice = "Deleted {} (Ctrl+Z in Fusion brings {} back).".format(
+            ", ".join(deleted) if len(deleted) < 4 else "{} items".format(len(deleted)),
+            "it" if len(deleted) == 1 else "them") if deleted else ""
+        if failed:
+            self._notice += " Fusion wouldn't delete: " + ", ".join(failed) + "."
+        self._features_dirty = True
+        self.dirty = True
 
     def delete_parts(self):
         """Inside the delete command: delete the parts (a part inside another deleted one goes with it)."""
@@ -483,7 +534,214 @@ class Controller:
             "mateView": {"ghost": self.mate_ghost, "isolate": self.mate_isolate,
                          "showing": self.mates.name if self.mates.active else None},
             "notice": self._notice,
+            **self._part_state(design),
+            "featRolled": self._roll_home is not None,
         }
+
+    # ------------------------------------------------------------ part mode
+
+    def _part_state(self, design):
+        """Mode ("part" / "assembly"), and in part mode the features, their folders and a body BOM."""
+        try:
+            mode, comp = features.mode(design)
+        except Exception:
+            log.error("part mode")
+            return {"mode": "assembly"}
+        self._last_mode = mode
+        if mode != "part":
+            return {"mode": "assembly"}
+        key = components.ComponentInfo.key(comp)
+        if self._features_dirty or key != self._feature_key:
+            with log.timed("features"):
+                self.features, self.feature_entities = features.collect(design, comp)
+            self._feature_key, self._features_dirty = key, False
+        tree = layout.feature_tree(self.layout, key)
+        out = {
+            "mode": "part",
+            "component": comp.name,
+            "features": {
+                "items": self.features,
+                "place": layout.place_features(self.features, tree),
+                "folders": [{"id": f["id"], "name": f["name"], "parent": f.get("parent"), "auto": False}
+                            for f in tree["folders"]],
+            },
+        }
+        if self.bom_open:
+            out["bom"] = self._part_bom(comp)
+        return out
+
+    def _part_bom(self, comp):
+        """Part mode BOM: the component's bodies, one line each."""
+        rows = []
+        for body, token in features.bodies(comp):
+            key = "body:" + body.name
+            rows.append({
+                "componentId": key, "name": body.name, "hw": None, "partNumber": "", "description": "",
+                "material": collect._safe(lambda: body.material.name, "") or "",
+                "mass": self._body_mass.get(key), "qty": 1, "paths": [],
+                "values": dict(self.layout.get("values", {}).get(key, {})),
+            })
+        rows.sort(key=lambda r: hardware.natural_key(r["name"]))
+        return {
+            "columns": bom.BUILTIN + [dict(c, custom=True) for c in self.layout.get("columns", [])],
+            "sections": [{"id": "bodies", "name": "Bodies", "rows": rows}] if rows else [],
+            "totalQty": len(rows), "unique": len(rows), "grouped": False,
+            "hasMass": bool(self._body_mass), "loading": None,
+        }
+
+    def _feature_entity(self, fid):
+        ent = self.feature_entities.get(fid)
+        if ent is None or not collect._safe(lambda: ent.isValid, False):
+            self._features_dirty = True
+            self._part_state(self.design())
+            ent = self.feature_entities.get(fid)
+        return ent if ent is not None and collect._safe(lambda: ent.isValid, False) else None
+
+    def roll_home(self, why=""):
+        """Undo the click-rolls: the timeline marker goes back to the end ("normal"). True if it moved."""
+        self._roll_home, self._rolled_ent = None, None
+        try:
+            timeline = self.design().timeline
+            before = timeline.markerPosition
+            target = timeline.count
+            if before == target:
+                log.info("roll home ({}): marker already at {}".format(why, target))
+                return False
+            self._selecting = True
+            if target >= timeline.count:
+                timeline.moveToEnd()
+            else:
+                timeline.markerPosition = target
+            log.info("roll home ({}): marker {} -> {} (now {})".format(why, before, target, timeline.markerPosition))
+        except Exception:
+            log.error("roll back home")
+        finally:
+            self._selecting = False
+        self._features_dirty = True
+        return True
+
+    def _handle_features(self, action, data):
+        """Part mode actions (features, sketches, their folders). False if not one of them."""
+        if not (action.startswith("feat") or data.get("scope") == "features"):
+            return False
+        if self._feature_key is None:
+            self._part_state(self.design())
+        tree = layout.feature_tree(self.layout, self._feature_key or "")
+        ids = data.get("ids") or ([data["id"]] if data.get("id") else [])
+        names = {i["id"]: i["name"] for i in self.features}
+        if action == "folderAdd":
+            fid = layout.add_folder(tree, data.get("name"), data.get("parent"))
+            if ids:
+                layout.assign_features(tree, ids, fid, names)
+            self._save_layout()
+        elif action == "folderRename":
+            layout.rename_folder(tree, data.get("id"), data.get("name"))
+            self._save_layout()
+        elif action == "folderDelete":
+            layout.delete_folder(tree, data.get("id"))
+            self._save_layout()
+        elif action == "folderMove":
+            if layout.move_folder(tree, data.get("id"), data.get("parent"), data.get("before")):
+                self._save_layout()
+        elif action == "assign":
+            layout.assign_features(tree, ids, data.get("folder"), names)
+            self._save_layout()
+        elif action == "featSelect":
+            self._select([e for e in (self._feature_entity(i) for i in ids) if e is not None])
+            return True
+        elif action == "featEdit":
+            # Fusion's own commands: SketchActivate = Edit Sketch, FusionEditFeatureCommand = Edit Feature.
+            # Features: one editor per type (FusionExtrudeEditCommand...), see actions.feature_edit_candidates.
+            ent = self._feature_entity(data.get("id"))
+            is_sketch = adsk.fusion.Sketch.cast(ent) is not None
+            self._selecting = True
+            try:
+                candidates = ["SketchActivate"] if is_sketch else actions.feature_edit_candidates(self.ui, ent)
+                if not candidates:
+                    raise RuntimeError("no edit command known for " + ent.objectType)
+                self.ui.activeSelections.clear()
+                self.ui.activeSelections.add(ent)
+                command_id = candidates[0]
+                if not self.ui.commandDefinitions.itemById(command_id).execute():
+                    raise RuntimeError("Fusion refused " + command_id)
+                log.info("edit {} via {} (candidates: {})".format(
+                    collect._safe(lambda: ent.name, "?"), command_id, ", ".join(candidates[:5])))
+            except Exception:
+                log.error("edit feature")
+                self._notice = ("Browser+ doesn't know this feature's editor yet: right-click it in Fusion's "
+                                "timeline and choose Edit once, and it will next time.")
+                self.push_state()
+            finally:
+                self._selecting = False
+            return True
+        elif action == "featRename":
+            ent = self._feature_entity(data.get("id"))
+            try:
+                ent.name = (data.get("name") or "").strip() or ent.name
+            except Exception:
+                log.error("rename feature")
+                self._notice = "Fusion couldn't rename it (see the log)."
+            self._features_dirty = True
+        elif action == "featSuppress":
+            ent = self._feature_entity(data.get("id"))
+            try:
+                ent.timelineObject.isSuppressed = bool(data.get("on"))
+            except Exception:
+                log.error("suppress feature")
+                self._notice = "Fusion couldn't change that (see the log)."
+            self._features_dirty = True
+        elif action == "featRollTo":
+            ent = self._feature_entity(data.get("id"))
+            # Rolling clears Fusion's selection (a selection event mid-roll): that must not count as
+            # "the user picked something else", so the roll runs as our own selection change.
+            self._selecting = True
+            try:
+                if data.get("quiet") and self._roll_home is None:
+                    self._roll_home = self.design().timeline.markerPosition    # where to go back to
+                self._rolled_at = time.perf_counter()
+                target = ent
+                if data.get("quiet") and adsk.fusion.Sketch.cast(ent) is not None:
+                    # A sketch: just after the last feature built from it (the sketch's whole effect);
+                    # a sketch nothing uses: just after the sketch.
+                    users = [i for i in self.features if data.get("id") in i["sketches"]]
+                    if users:
+                        last = max(users, key=lambda i: i["index"])
+                        target = self._feature_entity(last["id"]) or ent
+                actions.roll_to(target)
+                if data.get("quiet"):           # clicked in the tree: keep it selected, no notice
+                    self._rolled_ent, self._rolled_at = ent, time.perf_counter()
+                    self._select([ent])
+                    self._selecting = True      # (_select resets it)
+                    log.info("click-roll to {} (after {}): marker {} (home {}), selected {}".format(
+                        collect._safe(lambda: ent.name, "?"), collect._safe(lambda: target.name, "?"),
+                        self.design().timeline.markerPosition,
+                        self._roll_home, self.ui.activeSelections.count))
+                else:
+                    self._notice = "Timeline rolled to it. Use \u201cRoll to end\u201d when you're done."
+            except Exception:
+                log.error("roll to feature")
+            finally:
+                self._selecting = False
+            self._features_dirty = True
+        elif action == "featRollHome":
+            self.roll_home("panel")
+        elif action == "featVisible":
+            for ent in (self._feature_entity(i) for i in ids):
+                try:
+                    ent.isLightBulbOn = bool(data.get("on"))
+                except Exception:
+                    log.error("feature visibility")
+            self._features_dirty = True
+        elif action == "featDelete":
+            self._delete_features = [i for i in ids if i in self.feature_entities]
+            cmd = self.ui.commandDefinitions.itemById(DELETE_COMMAND_ID)
+            if cmd is not None and self._delete_features:
+                cmd.execute()       # run_delete, as one undo step
+            return True
+        else:
+            return False
+        self.push_state()
+        return True
 
     def _rolled_back(self, design):
         """True when the timeline marker isn't at the end (Roll to end is offered)."""
@@ -520,6 +778,8 @@ class Controller:
             self.refresh_data()     # a tree / BOM action can arrive before the first state push
             if self.layout is None:
                 self._load_layout(self.design())
+        if self.layout is not None and self._handle_features(action, data):
+            return
         if self.layout is not None and self._handle_tree(action, data):
             return
         if action in ("ready", "refresh"):
@@ -645,6 +905,7 @@ class Controller:
                         {"suppress": "change", "rename": "rename", "delete": "delete", "rollTo": "roll to"}[action])
                 self.dirty = True
         elif action == "rollEnd":
+            self._roll_home, self._rolled_ent = None, None
             actions.roll_to_end(self.design())
             self.dirty = True
         self.push_state()
@@ -654,6 +915,17 @@ class Controller:
     def on_selection(self):
         if self._selecting:
             return
+        # Something else picked in Fusion (or the viewport clicked): undo a click-roll of the timeline.
+        if self._roll_home is not None:
+            sels = self.ui.activeSelections
+            kept = any(sels.item(i).entity == self._rolled_ent for i in range(sels.count))
+            waited = time.perf_counter() - self._rolled_at
+            log.info("selection changed while click-rolled: {} selected, rolled feature {}, {:.2f} s after".format(
+                sels.count, "still selected" if kept else "not selected", waited))
+            # (The roll itself runs with _selecting set, so any change seen here is the user's.)
+            if not kept and self.roll_home("selection"):
+                self.push_state()
+        self._check_mode()
         sels = self.ui.activeSelections
         relationship = adsk.fusion.AssemblyConstraint.classType()
         if (not any(getattr(sels.item(i).entity, "objectType", "") == relationship for i in range(sels.count))
@@ -678,6 +950,20 @@ class Controller:
             occ = adsk.fusion.Occurrence.cast(ctx) if ctx is not None else None
         if occ is not None and occ.fullPathName != self.focus:
             self.focus = occ.fullPathName
+            self.push_state()
+
+    def _check_mode(self):
+        """Activating a component (or going back to the top) switches part / assembly mode."""
+        design = self.design()
+        if design is None:
+            return
+        try:
+            mode, comp = features.mode(design)
+            key = components.ComponentInfo.key(comp) if mode == "part" else None
+        except Exception:
+            return
+        if key != (self._feature_key if self._last_mode == "part" else None):
+            self._last_mode = mode
             self.push_state()
 
     def on_command_done(self, command_id):
@@ -751,9 +1037,10 @@ class MarkingMenuHandler(adsk.core.MarkingMenuEventHandler):
         try:
             kind = actions.learn_from_menu(adsk.core.MarkingMenuEventArgs.cast(args), _ctrl.app)
             if kind:
-                _ctrl._notice = "Learned how to edit {}: Edit in Browser+ opens it directly now.".format(
+                _ctrl._notice = "Learned how to edit {}: Browser+ opens it directly now.".format(
                     {"constraint": "relationships", "joint": "joints", "asBuilt": "as-built joints",
-                     "motionLink": "motion links", "rigidGroup": "rigid groups"}[kind])
+                     "motionLink": "motion links", "rigidGroup": "rigid groups"}.get(
+                        kind, kind.split("::")[-1].replace("Feature", "") + " features"))
                 _ctrl.push_state()
         except Exception:
             log.error("right-click menu")
@@ -781,7 +1068,7 @@ class DeletePartsCreatedHandler(adsk.core.CommandCreatedEventHandler):
 class DeletePartsExecuteHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         try:
-            _ctrl.delete_parts()
+            _ctrl.run_delete()
         except Exception:
             log.error("delete parts")
 
