@@ -989,7 +989,7 @@ class Controller:
         self._clear_mates()
         self._unisolate()
         self.layout = None          # component facts are per design (set_document on the next read)
-        collect.clear_cache()
+        # (The relationship cache is kept: it's per design, so switching back is instant.)
         self.dirty = True
         self.focus = None
         self.push_state()

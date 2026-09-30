@@ -26,6 +26,7 @@ PALETTE_NAME = "BuildBook"
 COMMAND_ID = "buildBookShow"
 ATTR_GROUP = "BuildBook"
 ATTR_NAME = "manual"
+FILL_EVENT = "buildBookFillLabels"     # custom event: read hardware details a batch at a time
 
 _handlers = []
 _ctrl = None
@@ -240,8 +241,8 @@ class Controller:
 
     def push_state(self):
         palette = self.ui.palettes.itemById(PALETTE_ID)
-        if palette is None:
-            return
+        if palette is None or not palette.isVisible:
+            return                  # hidden: nothing to update (showing the panel pushes)
         try:
             with log.timed("panel state"):
                 data = self.state()
@@ -250,6 +251,20 @@ class Controller:
             self._notice = None
         except Exception:
             log.error("push state")
+        if refs.has_pending() and not getattr(self, "_filling", False):
+            self._filling = True
+            self.app.fireCustomEvent(FILL_EVENT, "")
+
+    def fill_labels(self):
+        """A batch of slow hardware-detail reads; the panel updates once they're all in."""
+        self._filling = False
+        found, left = refs.fill_pending(0.15)
+        refs.flush_label_cache()
+        if left:
+            self._filling = True
+            self.app.fireCustomEvent(FILL_EVENT, "")
+        else:
+            self.push_state()
 
     # ------------------------------------------------------------ palette actions
 
@@ -662,7 +677,7 @@ class Controller:
             self.show_step(step_id)
 
     def on_document_switch(self):
-        refs.clear_caches()
+        refs.forget_document()          # (hardware labels are per component: kept)
         self.crop_overlay.clear()
         self.scene.clear()
         self.scene.flush_cache()
@@ -733,6 +748,7 @@ class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
                 _handlers.append(handler)
                 _add(palette.closed, PaletteClosedHandler())
             palette.isVisible = True
+            _ctrl.push_state()          # (nothing is pushed while it's hidden)
         except Exception:
             log.error("show palette")
             _ctrl.ui.messageBox("BuildBook failed:\n{}".format(traceback.format_exc()))
@@ -777,6 +793,14 @@ class DocSavedHandler(adsk.core.DocumentEventHandler):
             _ctrl.after_save()
         except Exception:
             log.error("documentSaved")
+
+
+class FillLabelsHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        try:
+            _ctrl.fill_labels()
+        except Exception:
+            log.error("fill labels")
 
 
 class DocSwitchHandler(adsk.core.DocumentEventHandler):
@@ -831,6 +855,11 @@ def run(context):
         _add(app.documentSaving, DocSavingHandler())
         _add(app.documentSaved, DocSavedHandler())
         _add(app.documentActivated, DocSwitchHandler())
+        try:
+            app.unregisterCustomEvent(FILL_EVENT)
+        except Exception:
+            pass
+        _add(app.registerCustomEvent(FILL_EVENT), FillLabelsHandler())
         _add(app.documentOpened, DocSwitchHandler())
         _add(app.documentDeactivating, DocDeactivatingHandler())
     except Exception:
@@ -842,6 +871,10 @@ def stop(context):
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:
+        try:
+            app.unregisterCustomEvent(FILL_EVENT)
+        except Exception:
+            pass
         if _ctrl is not None:
             _ctrl.scene.clear()
             _ctrl.explode.unregister(ui)

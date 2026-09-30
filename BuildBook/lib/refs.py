@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 
 import adsk.core
 import adsk.fusion
@@ -56,9 +57,43 @@ def flush_label_cache():
         pass
 
 
+_pending = {}               # "component id|name" -> component whose description / part number to read
+
+
+def forget_document():
+    """Another document: forget what's per design (labels are per component, kept)."""
+    _missing_tokens.clear()
+    _pending.clear()
+
+
+def has_pending():
+    return bool(_pending)
+
+
+def fill_pending(budget):
+    """Read description / part number (slow in Fusion) for hardware-looking names, a batch at a
+    time (`budget` seconds). Returns (labels found, components still to read)."""
+    global _labels_dirty
+    labels = _label_cache()
+    started, found = time.perf_counter(), 0
+    for key in list(_pending):
+        comp = _pending.pop(key)
+        try:
+            label = hardware.short_name(comp.name, comp.description, comp.partNumber)
+        except Exception:
+            label = None
+        labels[key] = label or ""
+        _labels_dirty = True
+        found += 1 if label else 0
+        if time.perf_counter() - started > budget:
+            break
+    return found, len(_pending)
+
+
 def clear_caches():
     global _labels, _labels_dirty
     _missing_tokens.clear()
+    _pending.clear()
     _labels = {}
     _labels_dirty = True        # also empties the file on the next flush
 
@@ -133,10 +168,10 @@ def display_name(occ, fallback, short=True):
         if key not in labels:
             label = hardware.short_name(name)
             if label is None and hardware.needs_details(name):
-                try:
-                    label = hardware.short_name(name, comp.description, comp.partNumber)
-                except Exception:
-                    label = None
+                # The description / part number can take very long to read (seconds per document):
+                # read them in the background (fill_pending) and show the plain name meanwhile.
+                _pending[key] = comp
+                return fallback
             labels[key] = label or ""
             _labels_dirty = True
         if labels[key]:
