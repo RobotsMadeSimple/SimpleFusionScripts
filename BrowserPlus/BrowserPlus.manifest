@@ -1,0 +1,11 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "b6303b21-32d6-4578-9f07-85fa21b10948",
+    "author": "Lucas Polodna",
+    "description": { "": "Find, check and tidy joints and relationships: what holds this part, problems, connection map." },
+    "version": "0.1.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

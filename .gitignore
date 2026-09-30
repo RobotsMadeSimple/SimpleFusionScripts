@@ -6,6 +6,8 @@ __pycache__/
 BuildBook/logs/
 BuildBook/thumbs/
 BuildBook/cache/
+BrowserPlus/logs/
+BrowserPlus/cache/
 
 # Editors / OS
 .vscode/

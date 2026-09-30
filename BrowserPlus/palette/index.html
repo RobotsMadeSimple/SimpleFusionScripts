@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Browser+</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="tree.css">
+<link rel="stylesheet" href="bom.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Browser+</div>
+    <div id="summary" class="summary"></div>
+    <button id="btnRollEnd" class="tb-btn hidden" title="Move the timeline marker back to the end">Roll to end</button>
+    <button id="btnRefresh" class="tb-btn icon" title="Re-read joints from the design">
+      <svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9 M13.5 2.5v3h-3"/></svg>
+    </button>
+  </header>
+  <div id="busy" class="busy"><div></div></div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="tree" class="tab">Tree</button>
+    <button data-tab="part" class="tab">Part</button>
+    <button data-tab="all" class="tab">All <span id="countAll" class="tab-count">0</span></button>
+    <button data-tab="health" class="tab">Health <span id="countHealth" class="tab-count">0</span></button>
+    <button data-tab="map" class="tab">Map</button>
+    <button data-tab="bom" class="tab">BOM</button>
+  </nav>
+
+  <div id="error" class="msg error hidden"></div>
+  <div id="notice" class="notice hidden" title="Click to dismiss"></div>
+  <div class="mate-bar" title="How a relationship is shown when you click it">
+    <span class="mate-label">Relationship view</span>
+    <label class="check" title="Show the two mated parts see-through, so the coloured faces show where they touch"><input type="checkbox" id="mateGhost"> See-through</label>
+    <label class="check" title="Hide every part except the two it mates"><input type="checkbox" id="mateIsolate"> Hide other parts</label>
+    <span class="spacer"></span>
+    <button id="btnMateClear" class="btn small hidden" title="Back to the normal view">Show all</button>
+  </div>
+
+  <!-- ============================================================ Tree (tree.js) -->
+  <main class="pane tree-pane" data-pane="tree" id="treePane"></main>
+
+  <!-- ============================================================ Part -->
+  <main class="pane" data-pane="part">
+    <div class="pane-bar">
+      <label class="check" title="Show whatever part you click in the canvas or browser"><input type="checkbox" id="follow"> Follow selection</label>
+    </div>
+    <div id="partEmpty" class="empty-state">
+      <svg viewBox="0 0 16 16"><path d="M8 1.5 14 4.8v6.4L8 14.5 2 11.2V4.8z M2 4.8 8 8l6-3.2 M8 8v6.5"/></svg>
+      <p>Select a part in the canvas or browser.</p>
+      <p class="sub">Everything that holds it is listed here, grouped by the part on the other end.</p>
+    </div>
+    <div id="partView" class="hidden">
+      <div class="part-head">
+        <div class="part-title">
+          <div class="title" id="partName"></div>
+          <div class="sub" id="partComponent"></div>
+        </div>
+        <span id="partGrounded" class="badge hidden">Grounded</span>
+        <button id="btnPartZoom" class="btn small" title="Zoom to this part">Zoom</button>
+        <button id="btnPartSelect" class="btn small" title="Select this part in Fusion">Select</button>
+      </div>
+      <div id="partGroups"></div>
+    </div>
+  </main>
+
+  <!-- ============================================================ All -->
+  <main class="pane" data-pane="all">
+    <input id="search" class="search" placeholder="Search joints and parts" spellcheck="false">
+    <div class="filters">
+      <select id="fKind" title="Kind">
+        <option value="">All kinds</option><option value="joint">Joints</option><option value="asBuilt">As-built joints</option>
+        <option value="constraint">Relationships</option><option value="rigidGroup">Rigid groups</option><option value="motionLink">Motion links</option>
+      </select>
+      <select id="fType" title="Type"></select>
+      <select id="fStatus" title="Status">
+        <option value="">Any status</option><option value="problems">Problems</option>
+        <option value="suppressed">Suppressed</option><option value="active">Active</option>
+      </select>
+      <select id="fGroup" title="Group by">
+        <option value="">No grouping</option><option value="pair">By part pair</option>
+        <option value="type">By type</option><option value="context">By subassembly</option>
+      </select>
+    </div>
+    <div id="allCount" class="hint"></div>
+    <div id="allList"></div>
+  </main>
+
+  <!-- ============================================================ Health -->
+  <main class="pane" data-pane="health">
+    <section class="card">
+      <div class="card-head"><h3>Errors &amp; warnings</h3></div>
+      <div id="healthProblems"></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3>Floating parts</h3></div>
+      <p class="hint">Not grounded and not held by any joint or relationship (nor is a parent assembly), so they can be dragged freely.</p>
+      <ul id="healthFloating" class="list"></ul>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3>Joined more than once</h3></div>
+      <p class="hint">Part pairs held by more than one joint or relationship: often a leftover or a conflict.</p>
+      <div id="healthDuplicates"></div>
+    </section>
+  </main>
+
+  <!-- ============================================================ Map -->
+  <main class="pane map-pane" data-pane="map">
+    <div class="map-bar">
+      <select id="mapScope" title="What to show">
+        <option value="near">Around the selected part</option>
+        <option value="all">Whole assembly</option>
+      </select>
+      <button id="btnMapFit" class="btn small" title="Fit the map to the panel">Fit</button>
+      <button id="btnMapRelayout" class="btn small" title="Lay the map out again">Re-layout</button>
+      <span class="legend">
+        <span class="lg joint"></span>joint <span class="lg constraint"></span>relationship
+        <span class="lg rigidGroup"></span>rigid <span class="lg error"></span>error
+      </span>
+    </div>
+    <svg id="map" class="map"></svg>
+    <div id="mapEmpty" class="empty-state hidden"><p>Select a part to see what it's connected to.</p></div>
+  </main>
+
+  <!-- ============================================================ BOM (bom.js) -->
+  <main class="pane bom-pane" data-pane="bom" id="bomPane"></main>
+
+<script src="app.js"></script>
+<script src="tree.js"></script>
+<script src="bom.js"></script>
+</body>
+</html>

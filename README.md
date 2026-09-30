@@ -5,6 +5,7 @@ Autodesk Fusion add-ins and scripts from Robots Made Simple.
 | Add-in | What it does |
 |---|---|
 | [BuildBook](BuildBook/) | Build-manual exploded views: sections and steps, explode moves with trail lines, per-step camera views and PNG export. |
+| [Browser+](BrowserPlus/) | Find, check and tidy joints and relationships: what holds a part, problems (errors, floating parts, duplicates), a clickable connection map. |
 
 ## Installing an add-in
 

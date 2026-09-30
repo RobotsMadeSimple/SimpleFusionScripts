@@ -1,0 +1,80 @@
+/* Browser+ Tree tab. Everything namespaced t-; colours come from style.css tokens. */
+
+.tree-pane { padding-top: 0; }
+
+.t-bar { position: sticky; top: 0; z-index: 3; background: var(--bg); margin: 0 -8px 4px; padding: 8px 8px 4px; }
+.t-bar .search { margin-bottom: 6px; }
+.t-bar-row { display: flex; align-items: center; gap: 10px; }
+.t-spacer { flex: 1; }
+.t-iso { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 3px 6px 3px 8px; font-size: 11px;
+         background: var(--accent-soft); border-left: 3px solid var(--accent); }
+.t-iso b { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.t-body { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 0; min-height: 40px; }
+
+.t-row { display: flex; align-items: center; gap: 3px; height: 22px; padding: 0 4px 0 calc(var(--d, 0) * 18px + 2px);
+         white-space: nowrap; cursor: default; user-select: none; -webkit-user-select: none; }
+/* Indent guides: one vertical line per level, under the parent's caret. */
+.t-row { position: relative; }
+.t-row::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--d, 0) * 18px + 2px);
+                 background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+                 background-size: 18px 100%; background-position: 8px 0; background-repeat: repeat-x; pointer-events: none; }
+.t-row:hover { background: var(--hover); }
+.t-row.sel, .t-row.sel:hover { background: var(--accent-soft); }
+.t-row.t-src { opacity: .5; }
+
+.t-caret { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center;
+           color: var(--muted); cursor: pointer; flex: none; }
+.t-caret.none { cursor: default; }
+.t-caret svg { width: 10px; height: 10px; transition: transform .08s; }
+.t-row.open > .t-caret svg { transform: rotate(90deg); }
+.t-caret:hover { color: var(--fg); }
+
+.t-eye { background: none; border: none; padding: 0 1px; color: var(--muted); cursor: pointer; display: inline-flex;
+         align-items: center; flex: none; border-radius: var(--radius); }
+.t-eye:hover { color: var(--fg); background: var(--hover); }
+.t-eye-gap { width: 16px; flex: none; }
+.t-row.t-off .t-eye { color: var(--line); }
+.t-row.t-off .t-eye:hover { color: var(--muted); }
+.t-row.t-off .t-name, .t-row.t-off .t-ico { opacity: .45; }
+
+.t-ico { display: inline-flex; color: var(--muted); flex: none; }
+.t-folder .t-ico { color: var(--accent); }
+.t-folder.t-auto .t-ico { color: var(--muted); }
+
+.t-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; margin-left: 2px; }
+.t-folder .t-name { font-weight: 600; }
+.t-hwname { font-weight: 600; }
+.t-sub { color: var(--muted); font-size: 11px; margin-left: 6px; font-weight: 400; }
+.t-x { color: var(--muted); font-size: 11px; }
+.t-autotag { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
+             border: 1px solid var(--line); border-radius: 6px; padding: 0 4px; flex: none; }
+.t-count { color: var(--muted); font-size: 11px; min-width: 14px; text-align: right; flex: none; }
+.t-warn { color: var(--warning); border: 1px solid var(--warning); border-radius: 8px; padding: 0 5px; font-size: 10px;
+          font-weight: 600; line-height: 14px; flex: none; }
+.t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); flex: none; }
+
+.t-tools { display: none; gap: 0; flex: none; }
+.t-row:hover .t-tools, .t-row.t-armed .t-tools { display: flex; }
+.t-tools .icon-btn { padding: 1px 2px; }
+.t-tools [data-armed] { color: var(--danger); font-size: 10px; padding: 1px 4px; }
+
+.t-emptyrow { color: var(--muted); font-style: italic; font-size: 11px; padding-left: calc(var(--d, 0) * 14px + 34px); }
+.t-emptyrow:hover { background: none; }
+
+.t-newrow:hover { background: none; }
+.t-newinput, .t-renameinput { flex: 1; min-width: 0; height: 20px; min-height: 0; padding: 0 4px; user-select: text; -webkit-user-select: text; }
+.t-renameinput { margin-left: 2px; font-weight: 600; }
+
+/* drag and drop */
+.t-row.t-drop-into { background: var(--accent-soft); outline: 1px solid var(--accent); outline-offset: -1px; }
+.t-row.t-drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.t-row.t-drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.t-ghost { position: fixed; z-index: 100; pointer-events: none; background: var(--surface); color: var(--fg);
+           border: 1px solid var(--accent); border-radius: var(--radius); padding: 1px 8px; font-size: 11px;
+           box-shadow: 0 2px 6px rgba(0, 0, 0, .25); white-space: nowrap; }
+.t-topzone { position: fixed; left: 8px; right: 8px; bottom: 8px; height: 32px; z-index: 50; display: flex;
+             align-items: center; justify-content: center; background: var(--surface); color: var(--muted);
+             border: 1px dashed var(--line); border-radius: var(--radius); font-size: 11px; }
+.t-topzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+body.t-dragging, body.t-dragging * { cursor: grabbing !important; }
