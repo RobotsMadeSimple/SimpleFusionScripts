@@ -34,6 +34,17 @@ class Hider:
         for body in design.rootComponent.bRepBodies:
             self.switch_off(body)
 
+    def paths(self):
+        """Paths of the parts (occurrences) this has switched off."""
+        out = set()
+        for item in self.hidden:
+            try:
+                if item.isValid and item.objectType == "adsk::fusion::Occurrence":
+                    out.add(item.fullPathName)
+            except Exception:
+                pass
+        return out
+
     def restore(self):
         for item in reversed(self.hidden):
             try:

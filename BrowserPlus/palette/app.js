@@ -61,6 +61,8 @@
     var previous = activeTab;
     activeTab = name;
     document.body.setAttribute('data-tab', name);
+    // The relationship view (see-through / hidden parts) belongs to the joint tabs: end it on Tree / BOM.
+    if ((name === 'tree' || name === 'bom') && state && state.mateView && state.mateView.showing) send('clearMates');
     store('tab', name);
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
       t.classList.toggle('active', t.getAttribute('data-tab') === name);

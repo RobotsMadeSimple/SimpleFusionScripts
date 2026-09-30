@@ -324,11 +324,13 @@ class Controller:
 
     def _unisolate(self):
         was = self.iso.active
+        restored = self.iso.paths()
         self._selecting = True
         try:
             self.iso.restore()
         finally:
             self._selecting = False
+        self._mark_visible(restored)
         self.isolated = None
         return was
 
@@ -380,13 +382,22 @@ class Controller:
     def _clear_mates(self):
         """Leave mate view (parts visible again). True if it was on."""
         was = self.mates.active
+        restored = self.mates.hidden_paths()
         self._selecting = True
         try:
             self.mates.clear()
         finally:
             self._selecting = False
+        self._mark_visible(restored)
         self._mate_rid = None
         return was
+
+    def _mark_visible(self, paths):
+        """Parts whose light bulb we just put back on: update what was read while they were off."""
+        if paths:
+            for part in self.parts:
+                if part["path"] in paths:
+                    part["visible"] = True
 
     def _text_select(self, rid, entity):
         """Select a relationship through Fusion's text command Selections.Set (verified)."""
@@ -429,6 +440,8 @@ class Controller:
         self.refresh_data()
         tree, placement = self._tree_state()
         roots = layout.one_part_roots(self.parts, self.layout.get("split"))
+        # Parts only hidden for the moment (mate view, isolate) are shown as visible: that's their real state.
+        temp_hidden = self.mates.hidden_paths() | self.iso.paths()
         paths = {p["path"] for p in self.parts}
         if self.focus and self.focus not in paths:
             self.focus = None
@@ -450,7 +463,7 @@ class Controller:
             "records": self.records,
             "parts": {p["path"]: {"name": p["name"], "component": p["component"], "grounded": p["grounded"],
                                   "componentId": p["componentId"], "leaf": p["leaf"], "bodies": p["bodies"],
-                                  "visible": p["visible"], "hw": p["hw"],
+                                  "visible": p["visible"] or p["path"] in temp_hidden, "hw": p["hw"],
                                   "asOne": roots.get(p["path"]) == p["path"],     # an assembly counted as one part
                                   "split": not p["leaf"] and p["path"] not in roots,  # an assembly listed by its parts
                                   "inOne": roots.get(p["path"], p["path"]) != p["path"]}

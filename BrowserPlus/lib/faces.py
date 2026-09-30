@@ -49,6 +49,10 @@ class MateHighlight:
         self._hider = Hider()       # light bulbs we switched off
         self.name = None            # relationship on show, for the panel
 
+    def hidden_paths(self):
+        """Parts switched off for the mate view (they're really visible)."""
+        return self._hider.paths()
+
     @property
     def active(self):
         return self._group is not None or self._hider.active
