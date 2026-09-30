@@ -13,3 +13,7 @@ Autodesk Fusion add-ins and scripts from Robots Made Simple.
 3. Select it and click **Run** (tick **Run on Startup** to load it every time).
 
 Each add-in's folder has its own README.
+
+## License
+
+[MIT](LICENSE)
