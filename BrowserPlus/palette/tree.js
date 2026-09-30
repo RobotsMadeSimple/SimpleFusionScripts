@@ -239,6 +239,7 @@
         (info.asOne || info.split ? tb('one', info.asOne ? 'Split: list its parts in the BOM instead of this assembly'
           : 'Count as one part in the BOM again', I.one) : '') +
         (n.explicit ? tb('reset', 'Back to its default place', I.reset) : '') +
+        tb('delPart', 'Delete from the design (click twice; Delete key works too)', BP.ICON.del, 'danger') +
       '</span></div>');
     if (o) nodes(n.kids, depth + 1, h);
   }
@@ -261,6 +262,7 @@
       (g.flt ? '<span class="t-warn" title="' + esc(fltTitle(g.flt)) + '">' + g.flt + '</span>' : '') +
       '<span class="t-tools">' +
         tb('select', 'Select all in Fusion', I.select) + tb('isolate', 'Isolate (hide everything else)', I.isolate) +
+        tb('delPart', 'Delete all ' + g.paths.length + ' from the design (click twice)', BP.ICON.del, 'danger') +
       '</span></div>');
     if (o) nodes(g.items, depth + 1, h);
   }
@@ -447,8 +449,23 @@
     BP.send('selectParts', { paths: Object.keys(sel.paths) });
   }
 
+  // Parts to delete for a row: the whole selection if the row is part of it, else the row's own.
+  function deletePaths(row) {
+    var own = rowPaths(row);
+    var inSel = own.length && own.every(function (p) { return sel.paths[p]; });
+    return inSel ? Object.keys(sel.paths) : own;
+  }
+  function sendDelete(paths) {
+    cancelDelete();
+    if (paths.length) BP.send('deleteParts', { paths: paths });
+  }
+
   function rowAct(act, row, btn) {
     var k = row.getAttribute('data-k');
+    if (act === 'delPart') {
+      var dp = deletePaths(row);
+      return BP.armed(btn, function () { sendDelete(dp); });
+    }
     if (act === 'toggle') return toggleRow(row);
     if (act === 'eye') {
       var ps = rowPaths(row);
@@ -494,6 +511,8 @@
       else if (a === 'expandAll') setAllOpen(true);
       else if (a === 'collapseAll') setAllOpen(false);
       else if (a === 'unisolate') BP.send('unisolate', {});
+      else if (a === 'confirmDelete' && pendingDelete) sendDelete(pendingDelete.paths);
+      else if (a === 'cancelDelete') cancelDelete();
       return;
     }
     if (t.closest('.t-bar') || !model) return;
@@ -528,6 +547,9 @@
       '<button class="icon-btn" data-act="expandAll" title="Expand all">' + I.expandAll + '</button>' +
       '<button class="icon-btn" data-act="collapseAll" title="Collapse all">' + I.collapseAll + '</button>' +
     '</div>' +
+    '<div class="t-confirm hidden"><span class="t-confirm-text"></span><span class="t-spacer"></span>' +
+      '<button class="btn small t-danger" data-act="confirmDelete">Delete</button>' +
+      '<button class="btn small" data-act="cancelDelete">Cancel</button></div>' +
     '<div class="t-iso hidden">Isolated: <b class="t-isolabel"></b><span class="t-spacer"></span>' +
       '<button class="btn small" data-act="unisolate" title="Bring everything back">Show all</button></div>';
   body = document.createElement('div');
@@ -561,7 +583,40 @@
       if (row) { e.preventDefault(); e.stopPropagation(); startRename(row); }
     }
   }, true);
+  // Delete key: the first press asks (and marks the rows), a second press (or the button) deletes.
+  var pendingDelete = null;
+  function cancelDelete() {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timer);
+    pendingDelete = null;
+    bar.querySelector('.t-confirm').classList.add('hidden');
+    Array.prototype.forEach.call(body.querySelectorAll('.t-doomed'), function (el) { el.classList.remove('t-doomed'); });
+  }
+  function askDelete(paths) {
+    cancelDelete();
+    pendingDelete = { paths: paths, timer: setTimeout(cancelDelete, 6000) };
+    var n = paths.length;
+    bar.querySelector('.t-confirm-text').textContent = 'Delete ' + (n === 1 ? BP.partName(paths[0]) : n + ' parts') +
+      '? Press Delete again.';
+    bar.querySelector('.t-confirm').classList.remove('hidden');
+    paths.forEach(function (p) {
+      var row = body.querySelector('.t-row[data-k="part"][data-path="' + CSS.escape(p) + '"]');
+      if (row) row.classList.add('t-doomed');
+    });
+  }
   document.addEventListener('keydown', function (e) {
+    if ((e.key !== 'Delete' && e.key !== 'Backspace') || BP.activeTab() !== 'tree' || drag) return;
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    var paths = Object.keys(sel.paths);
+    if (!paths.length) return;
+    e.preventDefault();
+    if (pendingDelete && pendingDelete.paths.join('|') === paths.join('|')) sendDelete(paths);
+    else askDelete(paths);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') cancelDelete();
     if (e.key !== 'Escape' || BP.activeTab() !== 'tree' || drag) return;
     var tag = e.target && e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;

@@ -27,6 +27,7 @@ from .lib import actions, analysis, bom, collect, components, faces, hardware, l
 PALETTE_ID = "browserPlusPalette"
 PALETTE_NAME = "Browser+"
 COMMAND_ID = "browserPlusShow"
+DELETE_COMMAND_ID = "browserPlusDeleteParts"   # deleting parts as one Fusion command = one undo step
 FILL_EVENT = "browserPlusFillDetails"    # custom event: read component details a batch at a time
 FILL_BUDGET = 0.15                       # seconds of slow reads per batch, so Fusion stays responsive
 
@@ -61,6 +62,7 @@ class Controller:
         self.iso = visibility.Hider()   # "isolate" from the tree
         self.isolated = None        # what's isolated (label for the panel)
         self._filling = False       # a background details read is queued
+        self._to_delete = []        # part paths for the delete command
 
     def design(self):
         return adsk.fusion.Design.cast(self.app.activeProduct)
@@ -251,6 +253,14 @@ class Controller:
                 self._selecting = False
         elif action == "unisolate":
             self._unisolate()
+        elif action == "deleteParts":
+            self._clear_mates()
+            self._unisolate()
+            self._to_delete = list(data.get("paths") or [])
+            cmd = self.ui.commandDefinitions.itemById(DELETE_COMMAND_ID)
+            if cmd is not None and self._to_delete:
+                cmd.execute()       # runs delete_parts (DeletePartsHandler); Fusion then re-reads the design
+            return True
         elif action == "bomOpen":
             self.bom_open = bool(data.get("open", True))
             if "group" in data:
@@ -288,6 +298,29 @@ class Controller:
                 tokens[occ.fullPathName] = collect._safe(lambda: occ.entityToken, "") or ""
         if not layout.assign(self.layout, paths, folder_id, tokens):
             self._notice = "Parts can't be put in the automatic Hardware folders."
+
+    def delete_parts(self):
+        """Inside the delete command: delete the parts (a part inside another deleted one goes with it)."""
+        paths = self._to_delete
+        self._to_delete = []
+        top = [p for p in paths if not any(p.startswith(q + "+") for q in paths if q != p)]
+        deleted = []
+        for occ in self.occurrences(top):
+            path = occ.fullPathName
+            try:
+                if occ.deleteMe():
+                    deleted.append(path)
+            except Exception:
+                log.error("delete " + path)
+        if self.layout is not None and deleted:
+            layout.assign(self.layout, [p for p in self.layout["items"] if any(
+                p == d or p.startswith(d + "+") for d in deleted)], None)
+            self._save_layout()
+        log.info("deleted {} of {} parts: {}".format(len(deleted), len(top), ", ".join(deleted)[:300]))
+        self._notice = ("Deleted {} part{} (Ctrl+Z in Fusion brings {} back).".format(
+            len(deleted), "" if len(deleted) == 1 else "s", "it" if len(deleted) == 1 else "them")
+            if deleted else "Fusion wouldn't delete that (see the log).")
+        self.dirty = True
 
     def _unisolate(self):
         was = self.iso.active
@@ -722,6 +755,24 @@ class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
             log.error("command terminated")
 
 
+class DeletePartsCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def notify(self, args):
+        try:
+            cmd = adsk.core.CommandCreatedEventArgs.cast(args).command
+            cmd.isRepeatable = False
+            _add(cmd.execute, DeletePartsExecuteHandler())
+        except Exception:
+            log.error("delete command")
+
+
+class DeletePartsExecuteHandler(adsk.core.CommandEventHandler):
+    def notify(self, args):
+        try:
+            _ctrl.delete_parts()
+        except Exception:
+            log.error("delete parts")
+
+
 class FillHandler(adsk.core.CustomEventHandler):
     def notify(self, args):
         try:
@@ -762,6 +813,11 @@ def run(context):
         _ctrl.edit_commands = actions.find_edit_commands(ui)
         actions.dump_text_commands(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs",
                                                      "textcommands.txt"))
+        del_def = ui.commandDefinitions.itemById(DELETE_COMMAND_ID)
+        if not del_def:
+            del_def = ui.commandDefinitions.addButtonDefinition(DELETE_COMMAND_ID, "Browser+ delete parts",
+                                                                "Delete parts picked in Browser+")
+        _add(del_def.commandCreated, DeletePartsCreatedHandler())
         _add(ui.activeSelectionChanged, SelectionHandler())
         _add(ui.commandTerminated, CommandTerminatedHandler())
         _add(ui.markingMenuDisplaying, MarkingMenuHandler())
@@ -799,6 +855,9 @@ def stop(context):
         cmd_def = ui.commandDefinitions.itemById(COMMAND_ID)
         if cmd_def:
             cmd_def.deleteMe()
+        del_def = ui.commandDefinitions.itemById(DELETE_COMMAND_ID)
+        if del_def:
+            del_def.deleteMe()
         log.info("Browser+ stopped")
     except Exception:
         log.error("stop")

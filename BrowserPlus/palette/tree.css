@@ -78,3 +78,11 @@
              border: 1px dashed var(--line); border-radius: var(--radius); font-size: 11px; }
 .t-topzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 body.t-dragging, body.t-dragging * { cursor: grabbing !important; }
+
+/* Delete confirmation (Delete key) */
+.t-confirm { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 3px 6px 3px 8px; font-size: 11px;
+             background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-left: 3px solid var(--danger); }
+.t-confirm-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn.t-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.t-row.t-doomed { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.t-row.t-doomed .t-name { text-decoration: line-through; }
