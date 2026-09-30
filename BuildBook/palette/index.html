@@ -109,6 +109,7 @@
             <button id="btnSaveView" class="btn" title="Save the current camera as this step's view; opening the step goes there">Save view</button>
             <button id="btnGoView" class="btn" title="Go back to this step's saved view">Go to view</button>
             <button id="btnExportStep" class="btn primary" title="Save this step as a PNG in the export folder">Export PNG</button>
+            <button id="btnAnnotate" class="btn" title="Draw arrows, lines, circles, boxes, text and numbered callouts on this step's picture">Annotate</button>
           </div>
         </div>
         <p class="hint" id="viewHint"></p>
@@ -170,6 +171,22 @@
       <button id="btnExportAll" class="btn primary" title="Save every step's image to the folder above">Export all steps</button>
       <button id="btnExportAllTo" class="btn" title="Pick a folder, then save every step's image there">Export all to&hellip;</button>
     </div>
+    <section class="card">
+      <div class="card-head"><h3>PDF manual</h3></div>
+      <p class="hint">Cover with contents, each section's page (title, picture, parts), its steps (name, notes,
+        picture, parts) and the full parts list. Section pictures: the picture button on a section's header.</p>
+      <label class="check"><input type="checkbox" id="setCoverPic"> Cover picture of the whole assembly</label>
+      <div class="inline-actions" id="coverActions">
+        <div class="thumb big" id="coverThumb" title="Cover picture preview (updates when you save its view or annotate it)"></div>
+        <button class="btn link" data-pic="pictureView" title="Save the current camera as the cover picture's view">Save view</button>
+        <button class="btn link" data-pic="pictureGo" title="Show the whole assembly at the cover's view">Go to view</button>
+        <button class="btn link" data-pic="annotate" title="Draw on the cover picture">Annotate</button>
+        <span class="sub" id="coverInfo"></span>
+      </div>
+      <div class="actions-row">
+        <button id="btnExportPdf" class="btn primary" title="Render every picture and write the manual as a PDF">Export PDF manual</button>
+      </div>
+    </section>
   </main>
 
   <!-- ============================================================ Settings -->
@@ -214,6 +231,7 @@
     <p class="hint footer-hint">The model never moves: exploded views are drawn on top. Click <b>Assembled</b> before editing parts.</p>
   </main>
 
+<script src="annot_draw.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

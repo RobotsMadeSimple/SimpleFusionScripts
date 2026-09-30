@@ -204,12 +204,15 @@ def save_thumbnail(ctrl, step_id):
 
 
 def thumbnail_urls(app, manual):
-    """step id -> file URL of its thumbnail (with a version so the panel reloads changes)."""
+    """step id (or "section-<id>", "cover") -> file URL of its thumbnail (with a version so the
+    panel reloads changes)."""
     out = {}
-    for _, step in model.ordered_steps(manual):
-        path = thumbnail_path(app, step["id"])
+    keys = [step["id"] for _, step in model.ordered_steps(manual)]
+    keys += ["section-" + sec["id"] for sec in manual["sections"]] + ["cover"]
+    for key in keys:
+        path = thumbnail_path(app, key)
         if os.path.exists(path):
-            out[step["id"]] = pathlib.Path(path).as_uri() + "?v={}".format(int(os.path.getmtime(path)))
+            out[key] = pathlib.Path(path).as_uri() + "?v={}".format(int(os.path.getmtime(path)))
     return out
 
 

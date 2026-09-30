@@ -225,3 +225,9 @@ li.ex.active .ex-row:hover { background: transparent; }
 /* ------------------------------------------------------------ drag */
 body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select: none; }
 .drop-line { position: absolute; height: 2px; background: var(--accent); pointer-events: none; display: none; z-index: 10; }
+
+/* Section picture row (section header's picture button) */
+.sec-picture { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 26px; font-size: 11px; color: var(--muted); }
+.sec-picture svg { width: 13px; height: 13px; }
+.sec-picture .spacer { flex: 1; }
+.section-head .tools button.on { color: var(--accent); }

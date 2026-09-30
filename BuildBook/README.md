@@ -23,6 +23,14 @@ stored inside the design (as an attribute), so it travels with the `.f3d`.
   hide individual lines.
 - **Images**: saved camera per step, fixed crop ratio, export one or all steps as
   `Section N - Step N - Name.png`, thumbnails and progress in the step list.
+- **Annotations**: arrows, lines, boxes, ellipses, text (with leader arrows) and
+  numbered callouts drawn on a step's picture in a separate editor window, with
+  per-annotation colour, weight, dashes and text size. Drawn onto exported PNGs.
+- **PDF manual**: cover (title, design, date, a picture of the whole assembly) with
+  contents, each section's page (title, optional picture of the assembly at the end
+  of the section, parts list), its steps (number, name, notes, picture, parts) and
+  the full parts list. Cover and section pictures have their own views and
+  annotations. Written in pure Python (lib/pdf.py); annotations are vector graphics.
 
 ## Install
 
@@ -47,7 +55,11 @@ lib/scene.py              step renderer: drawn copies, ghosts, trail lines, visi
 lib/capture.py            cameras, PNG export, thumbnails
 lib/overlay.py            optional on-screen crop frame
 lib/refs.py               part references and lookups
-palette/                  the panel (HTML/CSS/JS)
+lib/pictures.py           cover / section / step pictures and the annotation editor window
+lib/pdf.py                small PDF writer (pure Python)
+lib/manual_pdf.py         the manual's PDF layout (pure Python)
+palette/                  the panel (HTML/CSS/JS); annotate.* = the annotation editor,
+                          annot_draw.js = the annotation renderer (editor + PNG exports)
 tests/                    offline tests for the pure-Python modules
 ```
 
@@ -59,6 +71,7 @@ The pure-Python modules run without Fusion:
 python tests/test_core.py
 python tests/test_crop.py
 python tests/test_hardware.py
+python tests/test_pdf.py [sample.pdf]
 ```
 
 ## Runtime files

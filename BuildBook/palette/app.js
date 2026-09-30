@@ -123,6 +123,14 @@
     }
     $('error').classList.add('hidden');
     if (document.activeElement !== $('manualTitle')) $('manualTitle').value = state.manual.title;
+    var cover = state.manual.cover || {};
+    $('setCoverPic').checked = cover.enabled !== false;
+    $('coverActions').classList.toggle('hidden', cover.enabled === false);
+    var coverThumb = state.thumbs && state.thumbs.cover;
+    $('coverThumb').style.backgroundImage = coverThumb ? "url('" + coverThumb + "')" : '';
+    $('coverThumb').textContent = coverThumb ? '' : 'No preview yet';
+    $('coverInfo').textContent = (cover.camera ? 'View saved' : 'No view saved: uses the current camera') +
+      ((cover.annotations || []).length ? ' · ' + cover.annotations.length + ' annotation(s)' : '');
     // Opening a step from the list shows it; switching steps with the keyboard stays put.
     if (state.currentStepId && state.currentStepId !== lastStepId && pendingOpen) {
       showTab('step');
@@ -204,11 +212,23 @@
           '<span class="name" data-act="secRename" title="Double-click to rename">' + esc(sec.title) + '</span>' +
           progress +
           '<span class="tools">' +
+            '<button data-act="secPicture" class="' + (sec.image && sec.image.enabled ? 'on' : '') +
+              '" title="Section picture in the PDF (the assembly at the end of this section)">' + ICON.image + '</button>' +
             '<button data-act="secAddStep" title="Add step">+ Step</button>' +
             '<button data-act="secUp" title="Move up">' + ICON.up + '</button>' +
             '<button data-act="secDown" title="Move down">' + ICON.down + '</button>' +
             '<button data-act="secDelete" class="danger" title="Delete section">' + ICON.close + '</button>' +
           '</span></div>' +
+        (sec.image && sec.image.enabled ? '<div class="sec-picture">' +
+          '<span class="thumb" title="Section picture preview (updates when you save its view or annotate it)"' +
+            (state.thumbs && state.thumbs['section-' + sec.id] ? ' style="background-image:url(&quot;' + state.thumbs['section-' + sec.id] + '&quot;)"' : '') +
+          '></span> Section picture' +
+          (sec.image.camera ? '' : ' <span class="sub">(no view saved: uses the last step\'s)</span>') +
+          '<span class="spacer"></span>' +
+          '<button class="btn link" data-act="secPicView" title="Save the current camera as this section picture\'s view">Save view</button>' +
+          '<button class="btn link" data-act="secPicGo" title="Show the assembly at the end of this section, at its view">Go to view</button>' +
+          '<button class="btn link" data-act="secPicAnnotate" title="Draw on the section picture">Annotate' +
+            ((sec.image.annotations || []).length ? ' (' + sec.image.annotations.length + ')' : '') + '</button></div>' : '') +
         '<div class="steps">' + (steps || '<div class="empty">No steps yet. Hover the section header and click + Step.</div>') + '</div>' +
         '</div>';
     }).join('');
@@ -246,6 +266,8 @@
     var thumb = state.thumbs && state.thumbs[step.id];
     $('stepThumb').style.backgroundImage = thumb ? "url('" + thumb + "')" : '';
     $('stepThumb').textContent = thumb ? '' : 'No preview yet';
+    var nAnn = (step.annotations || []).length;
+    $('btnAnnotate').textContent = nAnn ? 'Annotate (' + nAnn + ')' : 'Annotate';
     $('viewHint').innerHTML = esc(detail.image.text) + '<br>' +
       (detail.hasCamera ? '&#x2713; Saved view: opening this step goes there.'
                         : 'No saved view yet: export uses the current camera.') +
@@ -578,6 +600,13 @@
     else if (act === 'secUp') send('moveSection', { id: secId, delta: -1 });
     else if (act === 'secDown') send('moveSection', { id: secId, delta: 1 });
     else if (act === 'secDelete') armed(actEl, function () { send('deleteSection', { id: secId }); });
+    else if (act === 'secPicture') {
+      var sp = (state.manual.sections.filter(function (s) { return s.id === secId; })[0] || {}).image || {};
+      send('pictureEnabled', { kind: 'section', id: secId, on: !sp.enabled });
+    }
+    else if (act === 'secPicView') send('pictureView', { kind: 'section', id: secId });
+    else if (act === 'secPicGo') send('pictureGo', { kind: 'section', id: secId });
+    else if (act === 'secPicAnnotate') send('annotate', { kind: 'section', id: secId });
   });
 
   $('tree').addEventListener('dblclick', function (e) {
@@ -733,6 +762,13 @@
   $('btnGoView').addEventListener('click', function () { send('goCamera'); });
   $('btnExportStep').addEventListener('click', function () { send('exportStep'); });
   $('btnExportAll').addEventListener('click', function () { send('exportAll'); });
+  $('btnExportPdf').addEventListener('click', function () { send('exportPdf'); });
+  $('btnAnnotate').addEventListener('click', function () { send('annotate', { kind: 'step' }); });
+  $('setCoverPic').addEventListener('change', function (e) { send('pictureEnabled', { kind: 'cover', on: e.target.checked }); });
+  $('coverActions').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-pic]');
+    if (b) send(b.getAttribute('data-pic'), { kind: 'cover' });
+  });
   $('btnExportAllTo').addEventListener('click', function () { send('exportAll', { ask: true }); });
   $('setShowFrame').addEventListener('change', function (e) { settings({ showCropFrame: e.target.checked }); });
   $('setAskFolder').addEventListener('change', function (e) { settings({ askFolder: e.target.checked }); });
@@ -789,6 +825,12 @@
         if (action === 'state') {
           state = JSON.parse(data);
           render();
+        } else if (action === 'compose') {
+          // An exported PNG: draw its annotations on it and send it back to be saved.
+          var job = JSON.parse(data);
+          BBAnnot.compose(job.image, job.annotations, function (err, url) {
+            if (!err) send('composed', { path: job.path, data: url });
+          });
         }
       } catch (e) {
         setBusy(false);

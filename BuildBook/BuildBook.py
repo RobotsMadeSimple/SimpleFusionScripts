@@ -6,9 +6,11 @@ model never moves: exploded views are drawn as custom graphics (lib/scene.py)
 and the manual lives in a design attribute, so it travels with the .f3d.
 """
 
+import base64
 import json
 import os
 import pathlib
+import tempfile
 import time
 import traceback
 
@@ -16,7 +18,7 @@ import adsk.core
 import adsk.fusion
 
 from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
-from .lib import capture, crop, explode, hardware, log, model, refs
+from .lib import capture, crop, explode, hardware, log, manual_pdf, model, pictures, refs
 from .lib.overlay import CropOverlay
 from .lib import scene as scene_mod
 from .lib.scene import Scene
@@ -42,8 +44,10 @@ class Controller:
         self.lines = lines_cmd.LinesCommand(self)
         self.anchor = anchor_cmd.AnchorCommand(self)
         self.crop_overlay = CropOverlay()
+        self.editor = pictures.Editor(self)     # the annotation editor (floating palette)
         self.checked = []           # parts checked in the panel's list
         self.frame_ratio = None     # crop ratio key while the on-screen frame is showing, else None
+        self.picture_view = False   # a section / cover picture is on screen (Go to view): frame it too
         self._resume_step = None
         self._notice = None
 
@@ -63,6 +67,10 @@ class Controller:
             log.error("manual attribute unreadable; starting a new one")
             return model.new_manual()
 
+    def keep(self, handler):
+        """Keep an event handler alive (Fusion only holds weak references)."""
+        _handlers.append(handler)
+
     def save(self, manual):
         design = self.design()
         if design is not None:
@@ -75,6 +83,7 @@ class Controller:
 
         `upto` shows the step as it stands just after that explode move.
         """
+        self.picture_view = False
         design = self.design()
         if design is None or step_id is None:
             self.scene.clear()
@@ -104,7 +113,7 @@ class Controller:
             manual = self.load() if design is not None else None
             _, step = model.find_step(manual, self.scene.step_id) if manual else (None, None)
             self.frame_ratio = None
-            if step is None or self.scene.edit or not manual["settings"].get("showCropFrame"):
+            if (step is None and not self.picture_view) or self.scene.edit                     or not manual["settings"].get("showCropFrame"):
                 self.crop_overlay.clear()
                 return
             ratio = manual["settings"].get("image", {}).get("ratio", crop.VIEWPORT)
@@ -130,6 +139,7 @@ class Controller:
         self._notice = message
 
     def close_view(self):
+        self.picture_view = False
         self.frame_ratio = None
         self.crop_overlay.clear()
         self.scene.clear()
@@ -347,6 +357,46 @@ class Controller:
                 return
         elif action == "exportManual":
             self._export_manual(manual)
+        elif action == "exportPdf":
+            self._export_pdf()
+        elif action == "annotate":
+            # The annotation editor on a picture (default: the current step).
+            kind = data.get("kind") or "step"
+            pid = data.get("id") or (step["id"] if kind == "step" and step else None)
+            if kind != "step" or pid:
+                self.editor.open(kind, pid)
+            return
+        elif action in ("pictureView", "pictureClearView", "pictureGo", "pictureEnabled"):
+            # Sections and the cover: their own view (camera), shown / included or not.
+            pic, title = pictures.holder(manual, data.get("kind"), data.get("id"))
+            if pic is None:
+                return
+            if action == "pictureView":
+                pic["camera"] = capture.camera_to_dict(self.app.activeViewport.camera)
+                # Its preview: the picture's parts at this view (it stays on screen, framed).
+                pictures.show(self, manual, data.get("kind"), data.get("id"), move_camera=False, frame=False)
+                pictures.save_thumb(self, data.get("kind"), data.get("id"))
+                self.update_overlay()
+                self.notify("View saved for {}.".format(title))
+            elif action == "pictureClearView":
+                pic["camera"] = None
+            elif action == "pictureEnabled":
+                pic["enabled"] = bool(data.get("on"))
+            else:
+                pictures.show(self, manual, data.get("kind"), data.get("id"))
+                self.push_state()
+                return
+        elif action == "composed":
+            # An exported PNG with its annotations drawn on (by the panel): write it over the plain one.
+            try:
+                png = base64.b64decode((data.get("data") or "").split(",", 1)[-1])
+                if png.startswith(b"\x89PNG") and data.get("path"):
+                    with open(data["path"], "wb") as handle:
+                        handle.write(png)
+                    log.info("annotations drawn on " + data["path"])
+            except Exception:
+                log.error("write annotated image")
+            return
             return
         elif action == "importManual":
             self._import_manual()
@@ -506,6 +556,8 @@ class Controller:
                     no_view += 1
                 written.append(capture.export_step(self, manual, step, folder))
                 done.append(step["id"])
+                if step.get("annotations"):
+                    self._compose(written[-1], step["annotations"])
         except Exception:
             log.error("export")
             self.ui.messageBox("BuildBook: export failed after {} image(s).\n\n{}".format(
@@ -532,6 +584,161 @@ class Controller:
                 msg += " ({} step(s) had no saved view and used the current one)".format(no_view)
             self.notify(msg)
         self.push_state()
+
+    def _compose(self, path, annotations):
+        """Have the panel draw the annotations on an exported PNG (it sends back "composed")."""
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        if palette is None:
+            return
+        try:
+            with open(path, "rb") as handle:
+                image = pictures.data_url(handle.read())
+            palette.sendInfoToHTML("compose", json.dumps({"path": path, "image": image,
+                                                          "annotations": annotations}))
+        except Exception:
+            log.error("compose annotations")
+
+    def _export_pdf(self):
+        """The whole manual as a PDF: cover + contents, each section's parts, each step's
+        name, notes, freshly rendered (cropped) image and parts, and the full parts list."""
+        manual = self.load()
+        design = self.design()
+        if design is None:
+            return
+        dialog = self.ui.createFileDialog()
+        dialog.title = "Export manual as PDF"
+        dialog.filter = "PDF (*.pdf)"
+        dialog.initialDirectory = capture.export_folder(manual)
+        dialog.initialFilename = capture.safe_filename(manual.get("title") or "Build manual") + ".pdf"
+        if dialog.showSave() != adsk.core.DialogResults.DialogOK:
+            return
+        out_path = dialog.filename
+
+        index, _, _ = refs.resolve_manual(design, manual)
+        short = manual["settings"].get("shortHardwareNames", True)
+
+        def part(item):
+            path = item["ref"].get("path", "")
+            occ = index.get(path)
+            name = refs.display_name(occ, item["ref"].get("name", path), short)
+            key = name
+            if occ is not None:
+                try:
+                    key = "{}|{}".format(occ.component.id, occ.component.name)
+                except Exception:
+                    pass
+            return key, name
+
+        # Short hardware names normally fill in in the background; the PDF needs them now.
+        for _, step in model.ordered_steps(manual):
+            for item in step["items"]:
+                part(item)
+        while refs.has_pending():
+            refs.fill_pending(5.0)
+        refs.flush_label_cache()
+
+        def bom(steps):
+            rows = {}
+            for step in steps:
+                for item in step["items"]:
+                    key, name = part(item)
+                    row = rows.setdefault(key, {"qty": 0, "name": name})
+                    row["qty"] += 1
+            return sorted(rows.values(), key=lambda r: hardware.natural_key(r["name"]))
+
+        # Images: every step at its saved view and crop, never transparent (white page).
+        render = json.loads(json.dumps(manual))
+        render["settings"].setdefault("image", {})["transparent"] = False
+        ordered = model.ordered_steps(manual)
+        images = {}
+        return_to = self.scene.step_id
+        camera = capture.camera_to_dict(self.app.activeViewport.camera)
+        progress = self.ui.createProgressDialog()
+        progress.isCancelButtonShown = True
+        extra = [("cover", None)] if manual.get("cover", {}).get("enabled", True) else []
+        extra += [("section", sec["id"]) for sec in manual["sections"]
+                  if sec.get("image", {}).get("enabled") and sec["steps"]]
+        progress.show("BuildBook", "Rendering picture %v of %m for the PDF...", 0, max(1, len(ordered) + len(extra)), 0)
+        cancelled = False
+        pics = {}
+        try:
+            for n, (kind, pid) in enumerate(extra):
+                if progress.wasCancelled:
+                    cancelled = True
+                    break
+                try:
+                    pics[(kind, pid)] = pictures.render(self, render, kind, pid)
+                except Exception:
+                    log.error("render {} picture for PDF".format(kind))
+                progress.progressValue = n + 1
+            for n, (_, step) in enumerate([] if cancelled else ordered, len(extra)):
+                if progress.wasCancelled:
+                    cancelled = True
+                    break
+                self.show_step(step["id"], move_camera=True, smooth=False)
+                self.crop_overlay.clear()
+                tmp = os.path.join(tempfile.gettempdir(), "buildbook-pdf-{}.png".format(step["id"]))
+                try:
+                    capture.save_png(self.app, render, step, tmp)
+                    with open(tmp, "rb") as handle:
+                        images[step["id"]] = handle.read()
+                except Exception:
+                    log.error("render step for PDF")
+                finally:
+                    for leftover in (tmp, tmp + ".png"):
+                        try:
+                            os.remove(leftover)
+                        except OSError:
+                            pass
+                progress.progressValue = n + 1
+        finally:
+            progress.hide()
+            if return_to:
+                self.show_step(return_to)
+            else:
+                self.close_view()
+            capture.apply_camera(self.app.activeViewport, camera, smooth=False)
+        if cancelled:
+            self.notify("PDF export cancelled.")
+            self.push_state()
+            return
+
+        sections = []
+        for si, sec in enumerate(manual["sections"], 1):
+            steps = []
+            for ti, step in enumerate(sec["steps"], 1):
+                steps.append({"number": "{}.{}".format(si, ti), "title": step.get("title", ""),
+                              "notes": step.get("notes", ""), "image": images.get(step["id"]),
+                              "annotations": step.get("annotations", []), "bom": bom([step])})
+            sec_pic = sec.get("image", {})
+            sections.append({"number": si, "title": sec.get("title", ""), "bom": bom(sec["steps"]), "steps": steps,
+                             "image": pics.get(("section", sec["id"])),
+                             "annotations": sec_pic.get("annotations", [])})
+        data = {
+            "title": manual.get("title") or "Build manual",
+            "design": self.app.activeDocument.name if self.app.activeDocument else "",
+            "date": time.strftime("%Y-%m-%d"),
+            "sections": sections,
+            "bom": bom([st for _, st in ordered]),
+            "cover_image": pics.get(("cover", None)),
+            "cover_annotations": manual.get("cover", {}).get("annotations", []),
+        }
+        try:
+            with log.timed("build PDF"):
+                pdf_bytes = manual_pdf.build(data)
+            with open(out_path, "wb") as handle:
+                handle.write(pdf_bytes)
+        except Exception:
+            log.error("export PDF")
+            self.ui.messageBox("BuildBook: couldn't write the PDF.\n\n{}".format(traceback.format_exc()))
+            return
+        log.info("PDF: {} ({} steps, {:.1f} MB)".format(out_path, len(ordered), len(pdf_bytes) / 1e6))
+        self.notify("PDF saved to " + out_path)
+        self.push_state()
+        try:
+            os.startfile(out_path)          # open it (Windows)
+        except Exception:
+            pass
 
     def _export_manual(self, manual):
         dialog = self.ui.createFileDialog()
@@ -876,6 +1083,7 @@ def stop(context):
         except Exception:
             pass
         if _ctrl is not None:
+            _ctrl.editor.close()
             _ctrl.scene.clear()
             _ctrl.explode.unregister(ui)
             _ctrl.picker.unregister(ui)

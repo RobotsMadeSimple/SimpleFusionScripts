@@ -80,6 +80,9 @@ def default_settings():
             "style": "dashed",
             "scale": 1.0,
         },
+        "annotation": {                # style for new annotations (palette/annot_draw.js)
+            "color": "#d9463e", "weight": 3, "dashed": False, "size": 28, "bold": False, "box": False,
+        },
         "nameSource": "name",          # name | partNumber | description
         "partLabels": {},              # component key -> display label override
         "image": {
@@ -129,11 +132,19 @@ def new_step(title="New step"):
         "prep": False,          # preparation step: later steps treat its parts as unassigned
         "explodes": [],         # ordered explode moves (see module docstring)
         "camera": None,
+        "annotations": [],      # drawn on the step's picture (palette/annot_draw.js)
     }
 
 
+def new_picture(enabled=False):
+    """A picture that isn't a step (the cover, a section): its own view and annotations.
+    A section's shows the assembly as it stands at the end of the section, nothing exploded;
+    the cover's shows the whole assembly."""
+    return {"enabled": enabled, "camera": None, "annotations": []}
+
+
 def new_section(title="New section"):
-    return {"id": new_id(), "title": title, "steps": []}
+    return {"id": new_id(), "title": title, "steps": [], "image": new_picture()}
 
 
 def new_manual(title="Build manual"):
@@ -142,6 +153,7 @@ def new_manual(title="Build manual"):
         "title": title,
         "sections": [],
         "settings": default_settings(),
+        "cover": new_picture(enabled=True),
     }
 
 
@@ -166,8 +178,12 @@ def from_json(text):
         # Before schema 3 "as earlier" was only the default, not a choice.
         data["settings"]["unassigned"] = HIDDEN
     _merge_defaults(data["settings"], default_settings())
+    for key, value in new_picture(enabled=True).items():
+        data.setdefault("cover", {}).setdefault(key, value)
     for section in data["sections"]:
         section.setdefault("steps", [])
+        for key, value in new_picture().items():
+            section.setdefault("image", {}).setdefault(key, value)
         for step in section["steps"]:
             template = new_step()
             for key, value in template.items():
