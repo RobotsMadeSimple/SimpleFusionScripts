@@ -308,6 +308,10 @@ class _Created(adsk.core.CommandCreatedEventHandler):
         ctrl = owner.ctrl
         try:
             cmd = adsk.core.CommandCreatedEventArgs.cast(args).command
+            # Started without the panel (e.g. Fusion repeating the last command): use the open step.
+            if model.find_step(ctrl.load(), owner.step_id)[1] is None and ctrl.scene.step_id:
+                owner.step_id = ctrl.scene.step_id
+            owner.session = getattr(owner, "session", 0) + 1     # (see _Destroy)
             manual, step = owner._step()
             if step is None:
                 ctrl.ui.messageBox("Open a step in the BuildBook panel first.")
@@ -342,6 +346,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
 
             parts = inputs.addSelectionInput("parts", "Parts", "Parts in this move (click moved copies too)")
             parts.addSelectionFilter("Occurrences")
+            parts.addSelectionFilter("SolidBodies")         # (bodies of split components)
             parts.addSelectionFilter(adsk.core.SelectionCommandInput.CustomGraphics)
             parts.setSelectionLimits(0, 0)
 
@@ -437,6 +442,11 @@ class _PreSelect(adsk.core.SelectionEventHandler):
             if args.activeInput is None or args.activeInput.id != "parts":
                 return
             entity = args.selection.entity
+            body = adsk.fusion.BRepBody.cast(entity)
+            if body is not None:
+                # A split component's body is a part of its own; any other body stands for its occurrence.
+                args.isSelectable = body.assemblyContext is not None
+                return
             if adsk.fusion.Occurrence.cast(entity) is None and self.owner.ctrl.scene.pickable_path(entity) is None:
                 args.isSelectable = False
         except Exception:
@@ -458,7 +468,19 @@ class _Select(adsk.core.SelectionEventHandler):
                 return
             entity = args.selection.entity
             occ = adsk.fusion.Occurrence.cast(entity)
-            if occ is not None:
+            body = adsk.fusion.BRepBody.cast(entity)
+            if occ is None and body is not None:
+                occ = refs.part_for_body(body)
+            split_part = refs.split_body_at(occ, args.selection.point) if adsk.fusion.Occurrence.cast(occ) else None
+            if split_part is not None:
+                # A click on a split component (even through its assembly): that body is the part.
+                path = split_part.fullPathName
+                if path in owner.picked:
+                    del owner.picked[path]
+                else:
+                    owner.pick_path(path, split_part)
+                args.isSelectable = False       # the box can't hold a body stand-in; the preview shows it
+            elif occ is not None:
                 owner.pick_path(occ.fullPathName, occ)
             else:
                 leaf = owner.ctrl.scene.pickable_path(entity)
@@ -486,6 +508,9 @@ class _Unselect(adsk.core.SelectionEventHandler):
         try:
             args = adsk.core.SelectionEventArgs.cast(args)
             occ = adsk.fusion.Occurrence.cast(args.selection.entity)
+            body = adsk.fusion.BRepBody.cast(args.selection.entity)
+            if occ is None and body is not None:
+                occ = refs.part_for_body(body)
             if occ is not None and occ.fullPathName in owner.picked:
                 del owner.picked[occ.fullPathName]
                 owner.command.doExecutePreview()
@@ -579,9 +604,12 @@ class _Destroy(adsk.core.CommandEventHandler):
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
+        self.session = getattr(owner, "session", 0)
 
     def notify(self, args):
         owner = self.owner
+        if self.session != getattr(owner, "session", 0):
+            return      # an earlier run closing after a new one started: leave the new one's state alone
         try:
             owner._reset_session()
             owner.preselect = []

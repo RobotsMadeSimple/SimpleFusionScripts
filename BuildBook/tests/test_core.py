@@ -306,5 +306,28 @@ class ExplodeTests(unittest.TestCase):
         self.assertAlmostEqual(explode.length(explode.normalize((3, 4, 0))), 1.0)
 
 
+class SplitBodyTests(unittest.TestCase):
+    """A split component's bodies are parts at "<occurrence>+#<body>": the occurrence is their ancestor."""
+
+    def test_bodies_in_separate_steps(self):
+        m = model.new_manual()
+        s = model.add_section(m, "Gripper")
+        base = model.add_step(m, s["id"], "Base")
+        covers = model.add_step(m, s["id"], "Covers")
+        model.add_items(base, [{"path": "Gripper:1+#Base", "name": "Base"}])
+        model.add_items(covers, [{"path": "Gripper:1+#Cover1", "name": "Cover1"}])
+        self.assertEqual(model.leaf_state(m, base["id"], "Gripper:1+#Base"), model.CURRENT)
+        self.assertEqual(model.leaf_state(m, base["id"], "Gripper:1+#Cover1"), model.LATER)
+        self.assertEqual(model.leaf_state(m, covers["id"], "Gripper:1+#Base"), model.EARLIER)
+
+    def test_whole_component_item_covers_its_bodies(self):
+        m = model.new_manual()
+        s = model.add_section(m, "Gripper")
+        step = model.add_step(m, s["id"], "All")
+        model.add_items(step, [{"path": "Gripper:1", "name": "Gripper"}])
+        self.assertEqual(model.leaf_state(m, step["id"], "Gripper:1+#Cover1"), model.CURRENT)
+        self.assertTrue(model.is_covered(model.covered_paths(m), "Gripper:1+#Cover1"))
+
+
 if __name__ == "__main__":
     unittest.main()

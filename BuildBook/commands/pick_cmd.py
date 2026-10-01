@@ -80,6 +80,8 @@ class PickCommand:
         occ = body.assemblyContext
         if occ is None:
             return None  # root-component body: not a part we can track
+        if refs.is_split(occ) and (self.level != LEVEL_TOP or model.PATH_SEP not in occ.fullPathName):
+            return refs.BodyPart(occ, body)     # a split component: each body is a part
         if self.level == LEVEL_TOP:
             top = occ.fullPathName.split(model.PATH_SEP)[0]
             return refs.path_index(self.ctrl.design()).get(top, occ)
@@ -242,6 +244,10 @@ class _Created(adsk.core.CommandCreatedEventHandler):
         ctrl = owner.ctrl
         try:
             cmd = adsk.core.CommandCreatedEventArgs.cast(args).command
+            # Started without the panel (e.g. Fusion repeating the last command): use the open step.
+            if model.find_step(ctrl.load(), owner.step_id)[1] is None and ctrl.scene.step_id:
+                owner.step_id = ctrl.scene.step_id
+            owner.session = getattr(owner, "session", 0) + 1     # (see _Destroy)
             manual = ctrl.load()
             _, step = model.find_step(manual, owner.step_id)
             if step is None:
@@ -427,9 +433,12 @@ class _Destroy(adsk.core.CommandEventHandler):
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
+        self.session = getattr(owner, "session", 0)
 
     def notify(self, args):
         owner = self.owner
+        if self.session != getattr(owner, "session", 0):
+            return      # an earlier run closing after a new one started: leave the new one's state alone
         try:
             owner.restore_hidden()
             owner.inputs = None

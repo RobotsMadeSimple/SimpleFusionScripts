@@ -795,6 +795,7 @@
   $('btnRefresh').addEventListener('click', function () { send('refresh'); });
   $('btnPick').addEventListener('click', function () { send('pick'); });
   $('btnAddSelected').addEventListener('click', function () { send('addSelected'); });
+  $('btnSplit').addEventListener('click', function () { send('toggleSplit', { paths: checkedPaths() }); });
   $('btnSaveView').addEventListener('click', function () { send('saveCamera'); });
   $('btnGoView').addEventListener('click', function () { send('goCamera'); });
   $('btnExportStep').addEventListener('click', function () { send('exportStep'); });

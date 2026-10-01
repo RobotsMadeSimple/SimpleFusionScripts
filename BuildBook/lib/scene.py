@@ -201,6 +201,8 @@ class Scene:
         mode_for = {model.EARLIER: earlier_mode, model.LATER: later_mode, model.UNASSIGNED: unassigned_mode}
         plans = []          # (occ, bodies, desired, world_offset)
         for path, occ in index.items():
+            if refs.is_split(occ):
+                continue                # its bodies are parts of their own (BodyPart entries)
             if not self._user_visible(occ):
                 continue
             ours = any(p in self._hidden_occs for p in [*_ancestors(path), path])

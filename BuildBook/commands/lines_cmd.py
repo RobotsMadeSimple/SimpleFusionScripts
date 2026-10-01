@@ -180,6 +180,10 @@ class _Created(adsk.core.CommandCreatedEventHandler):
         ctrl = owner.ctrl
         try:
             cmd = adsk.core.CommandCreatedEventArgs.cast(args).command
+            # Started without the panel (e.g. Fusion repeating the last command): use the open step.
+            if model.find_step(ctrl.load(), owner.step_id)[1] is None and ctrl.scene.step_id:
+                owner.step_id = ctrl.scene.step_id
+            owner.session = getattr(owner, "session", 0) + 1     # (see _Destroy)
             _, step = model.find_step(ctrl.load(), owner.step_id)
             if step is None:
                 ctrl.ui.messageBox("Open a step in the BuildBook panel first.")
@@ -319,9 +323,12 @@ class _Destroy(adsk.core.CommandEventHandler):
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
+        self.session = getattr(owner, "session", 0)
 
     def notify(self, args):
         owner = self.owner
+        if self.session != getattr(owner, "session", 0):
+            return      # an earlier run closing after a new one started: leave the new one's state alone
         try:
             owner.inputs = None
             owner.ctrl.show_step(owner.step_id)

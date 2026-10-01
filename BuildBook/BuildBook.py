@@ -62,10 +62,12 @@ class Controller:
             return model.new_manual()
         attr = design.attributes.itemByName(ATTR_GROUP, ATTR_NAME)
         try:
-            return model.from_json(attr.value if attr else "")
+            manual = model.from_json(attr.value if attr else "")
         except Exception:
             log.error("manual attribute unreadable; starting a new one")
-            return model.new_manual()
+            manual = model.new_manual()
+        refs.set_split(manual["settings"].get("splitBodies"))     # which components are parts per body
+        return manual
 
     def keep(self, handler):
         """Keep an event handler alive (Fusion only holds weak references)."""
@@ -440,6 +442,37 @@ class Controller:
                 self.ui.messageBox("Select parts in the canvas or browser first.")
                 return
             model.add_items(step, [refs.make_ref(o) for o in occs])
+            rerender = True
+        elif action == "toggleSplit":
+            # Split a component into its bodies (each a part of its own), or join it again: the parts
+            # ticked in the step, else those selected in Fusion. Every copy of the component follows.
+            index = refs.path_index(self.design())
+            occs = [index.get(p) for p in data.get("paths") or []] or refs.selected_occurrences(self.ui)
+            comps = {}
+            for occ in occs:
+                if occ is None:
+                    continue
+                occ = occ.occ if isinstance(occ, refs.BodyPart) else occ
+                if occ.bRepBodies.count < 2 and not refs.is_split(occ):
+                    continue                # one body: nothing to split
+                comps[refs.component_key(occ.component)] = occ.component.name
+            if not comps:
+                self.ui.messageBox("Select (or tick) a part with more than one body first.")
+                return
+            split = manual["settings"].setdefault("splitBodies", [])
+            joined, parted = [], []
+            for key, name in comps.items():
+                if key in split:
+                    split.remove(key)
+                    joined.append(name)
+                else:
+                    split.append(key)
+                    parted.append(name)
+            refs.set_split(split)
+            self._swap_split_items(manual, {k for k in comps if k in split}, {k for k in comps if k not in split})
+            self.notify(" ".join(filter(None, [
+                "Split into bodies: {}.".format(", ".join(parted)) if parted else "",
+                "Joined again: {}.".format(", ".join(joined)) if joined else ""])))
             rerender = True
         elif action == "addPaths" and step:
             index = refs.path_index(self.design())
@@ -884,6 +917,42 @@ class Controller:
             return False
         return True
 
+    def _swap_split_items(self, manual, parted_keys, joined_keys):
+        """Steps (and explode moves) follow a split / join: a split component's whole-part entries
+        become one per body; a joined component's body entries become the whole part again."""
+        index = refs.path_index(self.design())          # (already reflects the new split set)
+        occ_paths = {}
+        for path, part in index.items():
+            if not isinstance(part, refs.BodyPart) and refs.component_key(part.component) in parted_keys:
+                occ_paths[path] = [b for b in index.values()
+                                   if isinstance(b, refs.BodyPart) and b.occ.fullPathName == path]
+
+        def joined_owner(path):
+            if refs.BODY_MARK not in path:
+                return None
+            occ = index.get(path.split(refs.BODY_MARK)[0])
+            return occ if occ is not None and refs.component_key(occ.component) in joined_keys else None
+
+        def swap(entries, make):
+            out, seen = [], set()
+            for entry in entries:
+                path = entry["ref"].get("path", "")
+                if path in occ_paths:                    # whole part -> its bodies
+                    new = [make(entry, refs.make_ref(b)) for b in occ_paths[path]]
+                else:
+                    owner = joined_owner(path)           # a body -> the whole part (once)
+                    new = [make(entry, refs.make_ref(owner))] if owner is not None else [entry]
+                for e in new:
+                    if e["ref"]["path"] not in seen:
+                        seen.add(e["ref"]["path"])
+                        out.append(e)
+            return out
+
+        for _, step in model.ordered_steps(manual):
+            step["items"] = swap(step["items"], lambda old, ref: dict(old, ref=ref))
+            for ex in step.get("explodes", []):
+                ex["parts"] = swap(ex["parts"], lambda old, ref: dict(old, ref=ref))
+
     def _select(self, paths):
         index = refs.path_index(self.design())
         sels = self.ui.activeSelections
@@ -893,7 +962,7 @@ class Controller:
             if occ is None:
                 continue
             try:
-                sels.add(occ)
+                sels.add(occ.body if isinstance(occ, refs.BodyPart) else occ)   # a split part: its body
             except Exception:
                 pass  # hidden parts (e.g. exploded copies) can't be selected
 

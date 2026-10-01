@@ -131,8 +131,12 @@
         ctx.setLineDash([]);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(b.x, b.y, b.w, b.h);
-        ctx.lineWidth = Math.min(ctx.lineWidth, 4 * U);    // a heavy arrow, but a neat box
-        ctx.strokeRect(b.x, b.y, b.w, b.h);
+        // No outline: the white box only keeps the text readable over the wireframe lines
+        // (an annotation with border: true still gets one).
+        if (a.border === true) {
+          ctx.lineWidth = Math.min(ctx.lineWidth, 4 * U);
+          ctx.strokeRect(b.x, b.y, b.w, b.h);
+        }
       }
       ctx.fillStyle = a.color || DEFAULTS.color;
       ctx.font = font(a, U, 1, a.bold);

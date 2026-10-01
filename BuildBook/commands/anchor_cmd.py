@@ -209,6 +209,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
         ctrl = owner.ctrl
         try:
             cmd = adsk.core.CommandCreatedEventArgs.cast(args).command
+            owner.session = getattr(owner, "session", 0) + 1     # (see _Destroy)
             manual = ctrl.load()
             _, step = model.find_step(manual, owner.step_id)
             item = model.find_item(step, owner.path) if step else None
@@ -303,9 +304,12 @@ class _Destroy(adsk.core.CommandEventHandler):
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
+        self.session = getattr(owner, "session", 0)
 
     def notify(self, args):
         owner = self.owner
+        if self.session != getattr(owner, "session", 0):
+            return      # an earlier run closing after a new one started: leave the new one's state alone
         try:
             owner.clear_mark()
             owner.inputs = None

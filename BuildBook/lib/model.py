@@ -83,6 +83,7 @@ def default_settings():
         "annotation": {                # style for new annotations (palette/annot_draw.js)
             "color": "#d9463e", "weight": 3, "dashed": False, "size": 28, "bold": False, "box": False,
         },
+        "splitBodies": [],             # component keys whose bodies are parts of their own (refs.BodyPart)
         "nameSource": "name",          # name | partNumber | description
         "partLabels": {},              # component key -> display label override
         "image": {

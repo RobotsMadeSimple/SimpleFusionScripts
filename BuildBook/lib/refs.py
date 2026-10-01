@@ -19,9 +19,115 @@ def make_ref(occ):
     }
 
 
+# ---------------------------------------------------------------- split components
+# Components marked "split into bodies" (manual setting splitBodies: component keys): each of
+# their bodies is a part of its own, at path "<occurrence path>+#<body name>" (so the
+# occurrence counts as its ancestor everywhere paths are compared).
+
+BODY_MARK = model.PATH_SEP + "#"
+_split = set()
+
+
+def set_split(keys):
+    _split.clear()
+    _split.update(keys or [])
+
+
+def component_key(comp):
+    try:
+        return comp.id or comp.name
+    except Exception:
+        return comp.name
+
+
+def is_split(occ):
+    return occ is not None and not isinstance(occ, BodyPart) and component_key(occ.component) in _split
+
+
+class _NoChildren(list):
+    count = 0
+
+
+class BodyPart:
+    """One body of a split component, standing in for an occurrence wherever BuildBook uses
+    parts (scene, explode, trails, picking, parts lists). Its light bulb is the body's."""
+
+    def __init__(self, occ, body):
+        self.occ, self.body = occ, body
+
+    fullPathName = property(lambda self: self.occ.fullPathName + BODY_MARK + self.body.name)
+    name = property(lambda self: self.body.name)
+    component = property(lambda self: self.occ.component)
+    transform2 = property(lambda self: self.occ.transform2)
+    assemblyContext = property(lambda self: self.occ)   # its "parent": explode offsets are in its occurrence's space
+    bRepBodies = property(lambda self: [self.body])
+    childOccurrences = property(lambda self: _NoChildren())
+    boundingBox = property(lambda self: self.body.boundingBox)
+    entityToken = property(lambda self: self.body.entityToken)
+    appearance = property(lambda self: self.occ.appearance)
+    isVisible = property(lambda self: self.body.isVisible and self.occ.isVisible)
+    isValid = property(lambda self: self.occ.isValid and self.body.isValid)
+
+    @property
+    def isLightBulbOn(self):
+        return self.body.isLightBulbOn
+
+    @isLightBulbOn.setter
+    def isLightBulbOn(self, on):
+        self.body.isLightBulbOn = on
+
+    def __eq__(self, other):
+        return isinstance(other, BodyPart) and other.fullPathName == self.fullPathName
+
+    def __hash__(self):
+        return hash(self.fullPathName)
+
+
+def part_for_body(body):
+    """The part a body stands for: itself (a BodyPart) in a split component, else its occurrence."""
+    occ = body.assemblyContext
+    if occ is None:
+        return None
+    return BodyPart(occ, body) if is_split(occ) else occ
+
+
+def split_body_at(occ, point, tolerance=0.02):
+    """The BodyPart under a clicked point when `occ` is (or contains) a split component, else None.
+    (Fusion reports a click as the top-level occurrence; this finds the body actually clicked.)"""
+    if occ is None or point is None or not _split:
+        return None
+    inside = (adsk.fusion.PointContainment.PointInsidePointContainment,
+              adsk.fusion.PointContainment.PointOnPointContainment)
+    stack = [occ]
+    best = None
+    while stack:
+        o = stack.pop()
+        if is_split(o):
+            for body in o.bRepBodies:
+                try:
+                    if body.pointContainment(point) in inside:
+                        return BodyPart(o, body)
+                    # a click on an edge can sit a hair outside: take the nearest body within tolerance
+                    box = body.boundingBox
+                    if box.contains(point) and best is None:
+                        best = BodyPart(o, body)
+                except Exception:
+                    pass
+        stack.extend(o.childOccurrences)
+    return best
+
+
 def path_index(design):
-    """fullPathName -> occurrence proxy (root context) for every occurrence."""
-    return {occ.fullPathName: occ for occ in design.rootComponent.allOccurrences}
+    """fullPathName -> occurrence proxy (root context) for every occurrence, plus a BodyPart per
+    body of a split component."""
+    index = {}
+    for occ in design.rootComponent.allOccurrences:
+        index[occ.fullPathName] = occ
+        if is_split(occ):
+            for body in occ.bRepBodies:
+                part = BodyPart(occ, body)
+                index[part.fullPathName] = part
+    return index
 
 
 # Caches. Missing tokens last a session; hardware labels are also kept on disk
@@ -114,6 +220,9 @@ def resolve(design, ref, index):
         try:
             for ent in design.findEntityByToken(token):
                 found = adsk.fusion.Occurrence.cast(ent)
+                body = adsk.fusion.BRepBody.cast(ent)
+                if found is None and body is not None and is_split(body.assemblyContext):
+                    found = BodyPart(body.assemblyContext, body)
                 if found and found.isValid:
                     ref["path"] = found.fullPathName
                     ref["name"] = found.name
@@ -153,6 +262,12 @@ def resolve_manual(design, manual):
 
 
 def display_name(occ, fallback, short=True):
+    if isinstance(occ, BodyPart):
+        return occ.name                 # a split component's body: its own name
+    return _display_name(occ, fallback, short)
+
+
+def _display_name(occ, fallback, short=True):
     """Name to show for a part: a short hardware label ("M3x12 SHCS") when one is
     found in the component's name, description or part number, else `fallback`."""
     if occ is None:
@@ -186,6 +301,8 @@ def bom_line(occ, ref_name, short=True):
     if occ is None:
         base = re.sub(r":\d+$", "", ref_name or "")
         return base, base, hardware.short_name(base) is not None
+    if isinstance(occ, BodyPart):         # a split component's body: one line per body name
+        return component_key(occ.component) + "#" + occ.name, occ.name, hardware.short_name(occ.name) is not None
     comp = occ.component
     try:
         key = "{}|{}".format(comp.id, comp.name)
@@ -202,7 +319,7 @@ def unassigned(manual, index):
     short = manual["settings"].get("shortHardwareNames", True)
     out = []
     for path, occ in index.items():
-        if occ.childOccurrences.count:
+        if occ.childOccurrences.count or is_split(occ):
             continue
         if model.is_covered(covered, path):
             continue
@@ -219,9 +336,13 @@ def selected_occurrences(ui):
         ent = ui.activeSelections.item(i).entity
         occ = adsk.fusion.Occurrence.cast(ent)
         if occ is None:
-            # A body/face/edge was picked: use the occurrence that owns it.
+            # A body/face/edge was picked: use the occurrence that owns it -- or, in a split
+            # component, that body.
             ctx = getattr(ent, "assemblyContext", None)
             occ = adsk.fusion.Occurrence.cast(ctx) if ctx else None
+            body = adsk.fusion.BRepBody.cast(ent) or getattr(ent, "body", None)
+            if occ is not None and body is not None and is_split(occ):
+                occ = BodyPart(occ, body)
         if occ is None:
             continue
         path = occ.fullPathName
