@@ -187,6 +187,7 @@
           '<span class="num">' + n + '</span>' +
           '<span class="name" title="' + esc(st.title) + '">' + esc(st.title) + '</span>' +
           (st.prep ? '<span class="prep-tag" title="Preparation step">prep</span>' : '') +
+          ((st.repeat || 1) > 1 ? '<span class="prep-tag" title="Do this step ' + st.repeat + ' times">×' + st.repeat + '</span>' : '') +
           '<span class="meta" title="Parts">' + st.items.length + '</span>' +
           '<span class="status-icons">' +
             '<span class="' + (st.camera ? 'on' : 'off') + '" title="' +
@@ -223,7 +224,7 @@
           '<span class="thumb" title="Section picture preview (updates when you save its view or annotate it)"' +
             (state.thumbs && state.thumbs['section-' + sec.id] ? ' style="background-image:url(&quot;' + state.thumbs['section-' + sec.id] + '&quot;)"' : '') +
           '></span> Section picture' +
-          (sec.image.camera ? '' : ' <span class="sub">(no view saved: uses the last step\'s)</span>') +
+          (sec.image.camera ? '' : ' <span class="sub" title="No view saved: it uses the last step\'s view">(no view)</span>') +
           '<span class="spacer"></span>' +
           '<button class="btn link" data-act="secPicView" title="Save the current camera as this section picture\'s view">Save view</button>' +
           '<button class="btn link" data-act="secPicGo" title="Show the assembly at the end of this section, at its view">Go to view</button>' +
@@ -233,6 +234,38 @@
         '</div>';
     }).join('');
     $('tree').innerHTML = html || '<div class="empty-state"><p>No sections yet.</p><p class="sub">Start with <b>+ Section</b>, e.g. "Frame".</p></div>';
+  }
+
+  // The step's parts grouped with quantities, as the PDF lists them ("each time" for a repeated step).
+  function renderStepBom(detail, step) {
+    var rows = {}, order = [];
+    detail.items.forEach(function (it) {
+      var elsewhere = it.bom === false;
+      // One line per component (like the PDF), named after it, not the instance ("KP001_12", not "KP001_12:4").
+      var key = (it.bomKey || it.name) + (elsewhere ? '|x' : '');
+      if (!rows[key]) { rows[key] = { name: it.bomName || it.name, component: it.component, qty: 0, missing: false, elsewhere: elsewhere, hw: !!it.hw }; order.push(key); }
+      rows[key].qty += 1;
+      if (it.missing) rows[key].missing = true;
+    });
+    var times = Math.max(1, step.repeat || 1);
+    var list = order.map(function (k) { return rows[k]; }).sort(function (a, b) {
+      if (a.hw !== b.hw) return a.hw ? 1 : -1;               // parts, then hardware (as in the PDF)
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    var total = list.reduce(function (n, r) { return n + r.qty; }, 0);
+    $('bomCount').textContent = total ? total + (times > 1 ? ' × ' + times : '') : '';
+    if (!list.length) { $('stepBom').innerHTML = '<div class="empty">No parts in this step yet.</div>'; return; }
+    $('stepBom').innerHTML = '<table class="bom-table"><thead><tr><th class="q">Qty</th><th>Part</th>' +
+      (times > 1 ? '<th class="q" title="Qty × ' + times + ' repeats">Total</th>' : '') + '</tr></thead><tbody>' +
+      list.map(function (r, i) {
+        var head = r.hw && (i === 0 || !list[i - 1].hw)
+          ? '<tr class="hw-head"><td colspan="' + (times > 1 ? 3 : 2) + '">Hardware</td></tr>' : '';
+        return head + '<tr class="' + (r.missing ? 'missing' : '') + (r.elsewhere ? ' elsewhere' : '') + '"' +
+          (r.missing ? ' title="Missing from the design"' : r.elsewhere ? ' title="Flagged Not in BOM: left out of the PDF"' : '') +
+          '><td class="q">' + r.qty + '</td>' +
+          '<td title="' + esc(r.component || r.name) + '">' + esc(r.name) + (r.elsewhere ? ' <span class="nobom-tag" title="Flagged Not in BOM: left out of the PDF">not in PDF</span>' : '') + '</td>' +
+          (times > 1 ? '<td class="q">' + r.qty * times + '</td>' : '') + '</tr>';
+      }).join('') + '</tbody></table>';
   }
 
   function renderStep() {
@@ -245,6 +278,7 @@
     list.forEach(function (x, i) { if (step && x.step.id === step.id) pos = i; });
     $('tabStep').innerHTML = step ? 'Step <span class="tab-count">' + (pos + 1) + '/' + list.length + '</span>' : 'Step';
     if (!step) return;
+    renderStepBom(detail, step);
 
     var where = list[pos];
     $('stepCrumb').textContent = where.section.title + ' · Step ' + where.ti;
@@ -260,6 +294,7 @@
     }
     $('stepDistance').placeholder = state.manualDefault + ' (manual default)';
     if (document.activeElement !== $('notes')) $('notes').value = step.notes || '';
+    if (document.activeElement !== $('stepRepeat')) $('stepRepeat').value = step.repeat || 1;
 
     $('btnGoView').disabled = !detail.hasCamera;
     $('btnSaveView').textContent = detail.hasCamera ? 'Update view' : 'Save view';
@@ -279,11 +314,13 @@
     Object.keys(checked).forEach(function (p) { if (paths.indexOf(p) < 0) delete checked[p]; });
 
     $('items').innerHTML = detail.items.map(function (it) {
-      return '<li class="' + (it.missing ? 'missing' : '') + '" data-path="' + esc(it.path) + '">' +
+      return '<li class="' + (it.missing ? 'missing' : '') + (it.bom === false ? ' no-bom' : '') + '" data-path="' + esc(it.path) + '">' +
         '<input type="checkbox" data-act="check"' + (checked[it.path] ? ' checked' : '') + '>' +
         '<span class="name" data-act="select" title="Select in Fusion">' +
           '<div>' + esc(it.name) + '</div>' +
-          '<div class="sub">' + esc(it.component) + '</div></span>' +
+          '<div class="sub">' + esc(it.component) +
+            (it.bom === false ? ' <span class="nobom-tag" title="Not counted in the section and full parts lists">not in BOM</span>' : '') +
+          '</div></span>' +
         '<span class="in-moves" title="Explode moves this part is in">' +
           (it.moves.length ? 'Move ' + it.moves.join(', ') : 'not exploded') + '</span>' +
         '<button class="icon-btn anchor-btn' + (it.anchor ? ' on' : '') + '" data-act="anchor" title="' +
@@ -785,6 +822,14 @@
   $('btnAddExplode').addEventListener('click', function () { send('addExplode', { paths: checkedPaths() }); });
   $('btnShowAll').addEventListener('click', function () { send('scrubExplode', { id: null }); });
   $('btnTrailOn').addEventListener('click', function () { send('setTrail', { paths: checkedPaths(), trail: true }); });
+  $('btnNoBom').addEventListener('click', function () {
+    // Toggle: if every checked part is already out of the BOM, put them back in.
+    var paths = checkedPaths();
+    if (!paths.length || !state.step) return;
+    var out = state.step.items.filter(function (i) { return paths.indexOf(i.path) >= 0; })
+      .every(function (i) { return i.bom === false; });
+    send('setItemBom', { paths: paths, on: out });
+  });
   $('btnTrailOff').addEventListener('click', function () { send('setTrail', { paths: checkedPaths(), trail: false }); });
   $('btnReset').addEventListener('click', function (e) {
     var paths = checkedPaths();
@@ -807,6 +852,7 @@
   $('ctxEarlier').addEventListener('change', function (e) { send('setContext', { earlier: e.target.value }); });
   $('ctxLater').addEventListener('change', function (e) { send('setContext', { later: e.target.value }); });
   $('notes').addEventListener('change', function (e) { send('setNotes', { notes: e.target.value }); });
+  $('stepRepeat').addEventListener('change', function (e) { send('setRepeat', { repeat: parseInt(e.target.value, 10) || 1 }); });
   $('manualTitle').addEventListener('change', function (e) { send('renameManual', { title: e.target.value.trim() }); });
 
   $('setEarlier').addEventListener('change', function (e) { settings({ earlier: e.target.value }); });

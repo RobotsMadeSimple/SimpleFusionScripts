@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 
 import adsk.core
@@ -177,6 +178,22 @@ def display_name(occ, fallback, short=True):
         if labels[key]:
             return labels[key]
     return fallback
+
+
+def bom_line(occ, ref_name, short=True):
+    """(key, label, is_hardware) for a parts list: one line per component, labelled with the
+    component's (short hardware) name, not the instance's ("KP001_12", not "KP001_12:4")."""
+    if occ is None:
+        base = re.sub(r":\d+$", "", ref_name or "")
+        return base, base, hardware.short_name(base) is not None
+    comp = occ.component
+    try:
+        key = "{}|{}".format(comp.id, comp.name)
+    except Exception:
+        key = comp.name
+    label = display_name(occ, comp.name, short)
+    is_hw = bool(_label_cache().get(key)) or hardware.short_name(comp.name) is not None
+    return key, label, is_hw
 
 
 def unassigned(manual, index):

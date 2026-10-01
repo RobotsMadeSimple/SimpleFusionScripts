@@ -567,6 +567,15 @@
     }
     if (cv.style.cursor !== c) cv.style.cursor = c;
   }
+  // Clicking the picture takes the keyboard (out of a style box, and into the palette at all), so
+  // Delete, arrows and the shortcuts act on the shapes.
+  function takeKeys() {
+    var ae = document.activeElement;
+    if (ae && ae !== stage && /^(INPUT|SELECT|BUTTON)$/.test(ae.tagName)) ae.blur();
+    if (!editing) stage.focus({ preventScroll: true });
+  }
+  cv.addEventListener('pointerdown', takeKeys, true);
+  stage.addEventListener('pointerdown', takeKeys, true);
   cv.addEventListener('pointerdown', onDown);
   cv.addEventListener('pointermove', onMove);
   cv.addEventListener('pointerup', onUp);

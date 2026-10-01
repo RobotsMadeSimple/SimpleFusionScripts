@@ -210,8 +210,11 @@ class Controller:
                     "component": occ.component.name if occ else "",
                     "moves": numbers.get(path, []),
                     "anchor": bool(item.get("anchor")),
+                    "bom": item.get("bom", True) is not False,
                     "missing": path in missing_paths,
                 })
+                items[-1]["bomKey"], items[-1]["bomName"], items[-1]["hw"] = refs.bom_line(
+                    occ, item["ref"].get("name", path), short)
             # Listed by name (numbers by value: M3x8 before M3x12); the manual keeps its own order.
             items.sort(key=lambda it: (hardware.natural_key(it["name"]), hardware.natural_key(it["path"])))
             detail = {
@@ -424,6 +427,11 @@ class Controller:
                 if key in data:
                     step[key] = data[key]
             rerender = True
+        elif action == "setRepeat" and step:
+            try:
+                step["repeat"] = max(1, min(999, int(data.get("repeat") or 1)))
+            except (TypeError, ValueError):
+                step["repeat"] = 1
         elif action == "setNotes" and step:
             step["notes"] = data.get("notes", "")
         elif action == "addSelected" and step:
@@ -437,6 +445,12 @@ class Controller:
             index = refs.path_index(self.design())
             model.add_items(step, [refs.make_ref(index[p]) for p in data.get("paths", []) if p in index])
             rerender = True
+        elif action == "setItemBom" and step:
+            # Count these parts in the section / full parts lists, or not (counted elsewhere).
+            paths = set(data.get("paths") or [])
+            for item in step["items"]:
+                if item["ref"].get("path") in paths:
+                    item["bom"] = bool(data.get("on"))
         elif action == "removeItems" and step:
             model.remove_items(step, data.get("paths", []))
             rerender = True
@@ -619,15 +633,7 @@ class Controller:
 
         def part(item):
             path = item["ref"].get("path", "")
-            occ = index.get(path)
-            name = refs.display_name(occ, item["ref"].get("name", path), short)
-            key = name
-            if occ is not None:
-                try:
-                    key = "{}|{}".format(occ.component.id, occ.component.name)
-                except Exception:
-                    pass
-            return key, name
+            return refs.bom_line(index.get(path), item["ref"].get("name", path), short)
 
         # Short hardware names normally fill in in the background; the PDF needs them now.
         for _, step in model.ordered_steps(manual):
@@ -637,14 +643,38 @@ class Controller:
             refs.fill_pending(5.0)
         refs.flush_label_cache()
 
-        def bom(steps):
+        def bom(steps, each_time=False):
+            """Parts with quantities; a repeated step's parts count once per repeat (unless each_time).
+            Parts flagged "not in BOM" are left out of every list in the PDF."""
             rows = {}
             for step in steps:
+                times = 1 if each_time else max(1, int(step.get("repeat") or 1))
                 for item in step["items"]:
-                    key, name = part(item)
-                    row = rows.setdefault(key, {"qty": 0, "name": name})
+                    counted = item.get("bom", True) is not False
+                    if not counted:
+                        continue
+                    key, name, hw = part(item)
+                    row = rows.setdefault(key, {"qty": 0, "name": name, "hw": hw})
+                    row["qty"] += times
+            return _order(rows)
+
+        def _order(rows):
+            """Parts first, then hardware (manual_pdf gives it its own heading); by name in each."""
+            return sorted(rows.values(), key=lambda r: (r["hw"], hardware.natural_key(r["name"])))
+
+        def raw_bom(steps):
+            """Every part in the manual once (by part, whichever steps it's in): no repeats, no flags."""
+            rows, seen = {}, set()
+            for step in steps:
+                for item in step["items"]:
+                    path = item["ref"].get("path", "")
+                    if path in seen:
+                        continue
+                    seen.add(path)
+                    key, name, hw = part(item)
+                    row = rows.setdefault(key, {"qty": 0, "name": name, "hw": hw})
                     row["qty"] += 1
-            return sorted(rows.values(), key=lambda r: hardware.natural_key(r["name"]))
+            return _order(rows)
 
         # Images: every step at its saved view and crop, never transparent (white page).
         render = json.loads(json.dumps(manual))
@@ -709,7 +739,8 @@ class Controller:
             for ti, step in enumerate(sec["steps"], 1):
                 steps.append({"number": "{}.{}".format(si, ti), "title": step.get("title", ""),
                               "notes": step.get("notes", ""), "image": images.get(step["id"]),
-                              "annotations": step.get("annotations", []), "bom": bom([step])})
+                              "annotations": step.get("annotations", []), "bom": bom([step], each_time=True),
+                              "repeat": max(1, int(step.get("repeat") or 1))})
             sec_pic = sec.get("image", {})
             sections.append({"number": si, "title": sec.get("title", ""), "bom": bom(sec["steps"]), "steps": steps,
                              "image": pics.get(("section", sec["id"])),
@@ -719,7 +750,7 @@ class Controller:
             "design": self.app.activeDocument.name if self.app.activeDocument else "",
             "date": time.strftime("%Y-%m-%d"),
             "sections": sections,
-            "bom": bom([st for _, st in ordered]),
+            "bom": raw_bom([st for _, st in ordered]),
             "cover_image": pics.get(("cover", None)),
             "cover_annotations": manual.get("cover", {}).get("annotations", []),
         }

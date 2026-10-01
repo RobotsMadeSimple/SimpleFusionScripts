@@ -92,3 +92,5 @@ select { padding: 2px 3px; }
 .status .hint { color: var(--muted); margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
 
 #weightNum { width: 52px; }
+
+.stage:focus { outline: none; }

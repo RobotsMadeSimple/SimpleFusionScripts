@@ -98,7 +98,9 @@ def default_settings():
 def new_item(ref):
     # anchor: where the part's trail lines start, in its own component
     # coordinates; None = the centre of its bounding box.
-    return {"ref": dict(ref), "anchor": None}
+    # bom: False = not counted in the section / full parts lists (e.g. brought in again from an
+    # earlier step); the step's own list still shows it, as counted elsewhere.
+    return {"ref": dict(ref), "anchor": None, "bom": True}
 
 
 def new_direction(axis="+Z"):
@@ -133,6 +135,7 @@ def new_step(title="New step"):
         "explodes": [],         # ordered explode moves (see module docstring)
         "camera": None,
         "annotations": [],      # drawn on the step's picture (palette/annot_draw.js)
+        "repeat": 1,            # do this step N times (the manual says so; the BOM totals multiply)
     }
 
 
@@ -194,6 +197,7 @@ def from_json(text):
                 _moves_to_explodes(data, step)
             for item in step["items"]:
                 item.setdefault("anchor", None)
+                item.setdefault("bom", True)
             step.pop("lastDir", None)
             step.pop("crop", None)       # per-step crops were replaced by the manual's crop ratio
             for ex in step["explodes"]:

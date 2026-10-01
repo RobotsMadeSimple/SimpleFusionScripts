@@ -75,12 +75,21 @@ def _table(flow, rows, heading):
     if not rows:
         flow.page.text(MARGIN + 6, flow.y - ROW_H + 4.5, "No parts.", TABLE_SIZE, False, MUTED)
         flow.y -= ROW_H
+    stripe = 0
     for i, row in enumerate(rows):
-        if flow.room() < ROW_H:
+        if flow.room() < ROW_H * (2 if row.get("hw") and not rows[i - 1].get("hw", False) else 1):
             flow.new_page()
             header()
         p = flow.page
-        if i % 2:
+        if row.get("hw") and (i == 0 or not rows[i - 1].get("hw")):
+            # Hardware (screws, nuts, washers...) under its own heading, after the parts.
+            flow.y -= 4
+            p.text(MARGIN + 6, flow.y - ROW_H + 4.5, "HARDWARE", 8, True, ACCENT)
+            p.line(MARGIN, flow.y - ROW_H + 1, MARGIN + CONTENT_W, flow.y - ROW_H + 1, 0.5, RULE)
+            flow.y -= ROW_H
+            stripe = 0
+        stripe += 1
+        if stripe % 2 == 0:
             p.rect(MARGIN, flow.y - ROW_H, CONTENT_W, ROW_H, fill=ZEBRA)
         p.text_right(MARGIN + QTY_W - 14, flow.y - ROW_H + 4.5, str(row["qty"]), TABLE_SIZE, True, INK)
         p.text(MARGIN + QTY_W, flow.y - ROW_H + 4.5,
@@ -92,7 +101,9 @@ def _table(flow, rows, heading):
 
 def _step(flow, step, image):
     """Draw a step; returns the page number its heading is on."""
-    title_lines = pdf.wrap("{}  {}".format(step["number"], step["title"] or "Untitled step"),
+    repeat = int(step.get("repeat") or 1)
+    title_lines = pdf.wrap("{}  {}{}".format(step["number"], step["title"] or "Untitled step",
+                                             "  ×{}".format(repeat) if repeat > 1 else ""),
                            CONTENT_W, 14, True)
     notes = pdf.wrap(step["notes"], CONTENT_W, 10) if (step.get("notes") or "").strip() else []
     img_w = img_h = 0
@@ -109,6 +120,9 @@ def _step(flow, step, image):
     for line in title_lines:
         p.text(MARGIN, flow.y - 14, line, 14, True, INK)
         flow.y -= 18
+    if repeat > 1:
+        p.text(MARGIN, flow.y - 10, "Repeat this step {} times.".format(repeat), 10, True, ACCENT)
+        flow.y -= 15
     for line in notes:
         if flow.room() < 13:
             flow.new_page()
@@ -123,7 +137,7 @@ def _step(flow, step, image):
         p.image(image, MARGIN + (CONTENT_W - img_w) / 2, flow.y - img_h, img_w, img_h)
         _annotations(p, step.get("annotations"), MARGIN + (CONTENT_W - img_w) / 2, flow.y - img_h, img_w, img_h)
         flow.y -= img_h + 8
-    _table(flow, step["bom"], "Parts for this step")
+    _table(flow, step["bom"], "Parts for this step" + (" (each time)" if repeat > 1 else ""))
     flow.y -= 10
     return start
 

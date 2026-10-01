@@ -234,7 +234,7 @@ class ExplodeMoveTests(unittest.TestCase):
                '{"ref":{"path":"R:1"},"moves":[]}]}]}]}')
         m = model.from_json(old)
         step = m["sections"][0]["steps"][0]
-        self.assertTrue(all(set(i) == {"ref", "anchor"} for i in step["items"]))
+        self.assertTrue(all(set(i) == {"ref", "anchor", "bom"} for i in step["items"]))
         self.assertTrue(all(i["anchor"] is None for i in step["items"]))
         first, second = step["explodes"]
         self.assertEqual(model.direction_label(first["direction"]), "+X")

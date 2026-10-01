@@ -143,7 +143,7 @@ textarea { resize: vertical; }
 .progress span { display: inline-flex; align-items: center; gap: 2px; }
 .progress .done { color: var(--ok); }
 .progress svg { width: 11px; height: 11px; }
-.steps { padding: 2px 0; }
+.steps { padding: 2px 0 2px 16px; }   /* steps sit in under their section */
 .section.collapsed .steps { display: none; }
 .step { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 2px; cursor: pointer; border-left: 3px solid transparent; }
 .step:hover { background: var(--hover); }
@@ -227,7 +227,25 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .drop-line { position: absolute; height: 2px; background: var(--accent); pointer-events: none; display: none; z-index: 10; }
 
 /* Section picture row (section header's picture button) */
-.sec-picture { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 26px; font-size: 11px; color: var(--muted); }
+.sec-picture { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 8px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--muted); }
 .sec-picture svg { width: 13px; height: 13px; }
 .sec-picture .spacer { flex: 1; }
+.sec-picture { white-space: nowrap; }
 .section-head .tools button.on { color: var(--accent); }
+
+/* Step tab: parts list preview */
+.bom-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.bom-table th { text-align: left; font-size: 10px; color: var(--muted); font-weight: 600; padding: 3px 6px;
+                background: var(--bg); border-bottom: 1px solid var(--line); }
+.bom-table td { padding: 3px 6px; border-bottom: 1px solid var(--line-soft); }
+.bom-table tr:nth-child(even) td { background: var(--bg); }
+.bom-table .q { text-align: right; width: 38px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.bom-table tr.missing td { color: var(--danger); }
+
+/* Parts not counted in the BOM (brought in again from another step) */
+.nobom-tag { font-size: 9px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted);
+             border: 1px solid var(--line); border-radius: 8px; padding: 0 5px; margin-left: 4px; white-space: nowrap; }
+#items li.no-bom .name > div:first-child { color: var(--muted); }
+.bom-table tr.elsewhere td { color: var(--muted); }
+.bom-table tr.hw-head td { background: none; color: var(--accent); font-size: 10px; font-weight: 600;
+                           text-transform: uppercase; letter-spacing: .04em; padding-top: 8px; }
