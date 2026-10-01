@@ -8,6 +8,8 @@ BuildBook/thumbs/
 BuildBook/cache/
 BrowserPlus/logs/
 BrowserPlus/cache/
+HoleThreadCallouts/logs/
+HoleThreadCallouts/thumbs/
 
 # Editors / OS
 .vscode/

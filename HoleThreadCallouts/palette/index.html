@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hole &amp; Thread Callouts</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="top">
+  <div class="grow">
+    <div class="title">Hole &amp; Thread Callouts</div>
+    <div class="sub ellipsis" id="component">&nbsp;</div>
+  </div>
+  <div class="style-switch" title="Fusion's visual style">
+    <button class="seg" id="styleWire" title="Wireframe with visible edges (thread views)">Wireframe</button>
+    <button class="seg" id="styleShaded" title="Shaded with visible edges (shaded view)">Shaded</button>
+  </div>
+  <button class="tb-btn" id="refresh" title="Refresh from the design">
+    <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5V5h-2.5"/></svg>
+  </button>
+</div>
+<div class="busy" id="busy"><div></div></div>
+<nav class="cfg-tabs hidden" id="cfgTabs" title="Configurations of this design: each has its own views"></nav>
+<div class="bar error hidden" id="error"></div>
+<div class="bar notice hidden" id="notice" title="Click to dismiss"></div>
+
+<div class="pane" id="pane">
+  <div class="card">
+    <div class="card-head"><h3>Views</h3></div>
+    <div id="views"></div>
+    <div class="copy-views hidden" id="copyViews">
+      <span id="copyLabel">Start from the views of</span> <select id="copyFrom"></select>
+      <button class="btn small" id="copyBtn" title="Copy that configuration's views (cameras, padding, callouts) here">Copy</button>
+    </div>
+    <div class="actions-row">
+      <button class="btn" id="addThread">+ Thread view (current camera)</button>
+      <button class="btn" id="addShaded">Set shaded view (current camera)</button>
+    </div>
+    <p class="hint">Orbit to an angle and click + Thread view. Each hole is called out in the first view that shows it. The shaded view always comes last.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Holes</h3></div>
+    <div id="holes"></div>
+    <label class="check"><input type="checkbox" id="guess"><span>Also use tap-drill sizes (2.5 mm = M3, 3.3 = M4, 4.2 = M5, 5.0 = M6)</span></label>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Mark selected holes</h3></div>
+    <p class="hint first">Select hole faces or edges in Fusion, then:</p>
+    <div class="mark-row" id="markSizes"></div>
+    <div class="mark-row">
+      <button class="btn small" data-mark="dowel"><svg class="dowel-ico" viewBox="0 0 16 16"><use href="#dowel"/></svg>Dowel</button>
+      <button class="btn small" data-mark="none">Not threaded</button>
+      <button class="btn small" data-mark="auto">Automatic</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Export</h3></div>
+    <div class="grid two">
+      <div><label for="height">Image height (px)</label><input type="number" id="height" min="100" max="8000" step="50"></div>
+      <div><label for="gap">Gap (px)</label><input type="number" id="gap" min="0" max="500" step="5"></div>
+    </div>
+    <div class="actions-row"><button class="btn primary" id="export">Export image</button>
+      <button class="btn hidden" id="exportAll" title="One image per configuration that has thread views, into a folder you pick">Export all configurations</button></div>
+    <p class="hint">Saves a PNG and copies it to the clipboard.</p>
+    <div class="folder hidden" id="folder"></div>
+  </div>
+</div>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+  <g id="dowel"><circle cx="8" cy="8" r="6"/><path d="M8 2v12M2 8h12"/><path d="M8 8V2.6A5.4 5.4 0 0 0 2.6 8z" fill="currentColor" stroke="none"/><path d="M8 8h5.4A5.4 5.4 0 0 1 8 13.4z" fill="currentColor" stroke="none"/></g>
+</defs></svg>
+<div class="pop hidden" id="pop"></div>
+
+<script src="annot_draw.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

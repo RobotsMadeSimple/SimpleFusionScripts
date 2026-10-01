@@ -1,0 +1,11 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "3e261d9a-9b8d-4db1-bfbb-7eb34b396eea",
+    "author": "Lucas Polodna",
+    "description": { "": "One image showing which holes to tap: colour-coded thread holes with callouts in one or more views, dowels, and a shaded view." },
+    "version": "0.1.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

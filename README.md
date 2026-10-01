@@ -4,8 +4,9 @@ Autodesk Fusion add-ins and scripts from Robots Made Simple.
 
 | Add-in | What it does |
 |---|---|
-| [BuildBook](BuildBook/) | Build-manual exploded views: sections and steps, explode moves with trail lines, per-step camera views and PNG export. |
-| [Browser+](BrowserPlus/) | Find, check and tidy joints and relationships: what holds a part, problems (errors, floating parts, duplicates), a clickable connection map. |
+| [BuildBook](BuildBook/) | Build-manual exploded views: sections and steps, explode moves with trail lines, per-step camera views, annotations, PNG export and a PDF manual with parts lists. |
+| [Browser+](BrowserPlus/) | Find, check and tidy joints and relationships: what holds a part, problems (errors, floating parts, duplicates), a clickable connection map; a part tree with folders, a BOM, and a feature tree in part mode. |
+| [Hole & Thread Callouts](HoleThreadCallouts/) | One image showing which holes to tap: colour-coded (colour-blind-safe) thread holes with "2x M3" callouts in one or more views, dowels, and a shaded view, stitched into one PNG. |
 
 ## Installing an add-in
 
