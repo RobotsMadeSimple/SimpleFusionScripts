@@ -66,8 +66,10 @@ function Get-AddInFolders($root) {
 
 function Get-Description($folder) {
     try {
-        $m = Get-Content -Raw (Join-Path $folder.FullName "$($folder.Name).manifest") | ConvertFrom-Json
-        return $m.description.''
+        # "description": { "": "..." } -- PowerShell 5's ConvertFrom-Json can't read an empty key.
+        $text = Get-Content -Raw (Join-Path $folder.FullName "$($folder.Name).manifest")
+        if ($text -match '"description"\s*:\s*\{\s*""\s*:\s*"([^"]*)"') { return $Matches[1] }
+        return ""
     } catch { return "" }
 }
 
@@ -85,7 +87,8 @@ function Select-AddIns($folders) {
         Write-Host ("  [{0}] {1}" -f ($i + 1), $folders[$i].Name) -ForegroundColor White -NoNewline
         if ($desc) { Write-Host "  - $desc" -ForegroundColor DarkGray } else { Write-Host "" }
     }
-    $answer = Read-Host "`nWhich add-ins? Numbers separated by commas, or Enter for all"
+    try { $answer = Read-Host "`nWhich add-ins? Numbers separated by commas, or Enter for all" }
+    catch { $answer = ""; Write-Host "    (no prompt available: installing all)" }
     if ([string]::IsNullOrWhiteSpace($answer)) { return $folders }
     $picked = @()
     foreach ($part in $answer -split "[,\s]+") {
@@ -127,10 +130,13 @@ if (-not $git) {
     throw "Git isn't installed. Install it from https://git-scm.com (or use -Zip with release zips)."
 }
 if (-not $Dir) {
-    # Run from inside a clone (install\install.ps1): use that clone.
-    $here = Split-Path -Parent $PSScriptRoot
-    if ($PSScriptRoot -and (Test-Path (Join-Path $here ".git"))) { $Dir = $here }
-    else { $Dir = Join-Path $HOME "SimpleFusionScripts" }
+    # Run from inside a clone (install\install.ps1): use that clone. Piped into iex there's no
+    # script folder ($PSScriptRoot is empty): use ~\SimpleFusionScripts.
+    if ($PSScriptRoot) {
+        $here = Split-Path -Parent $PSScriptRoot
+        if (Test-Path (Join-Path $here ".git")) { $Dir = $here }
+    }
+    if (-not $Dir) { $Dir = Join-Path $HOME "SimpleFusionScripts" }
 }
 if (Test-Path (Join-Path $Dir ".git")) {
     Write-Step "Updating $Dir"
