@@ -14,7 +14,7 @@ import uuid
 import adsk
 import adsk.core
 
-from . import crop, log, model
+from . import crop, log, model, paths
 
 
 # ---------------------------------------------------------------- camera
@@ -171,7 +171,7 @@ def remove_render_leftovers(folder):
 # ---------------------------------------------------------------- thumbnails
 
 THUMB_WIDTH = 240
-_THUMB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "thumbs")
+_THUMB_DIR = paths.data_dir("thumbs")       # per user, not in the add-in folder (lib/paths.py)
 
 
 def _document_key(app):

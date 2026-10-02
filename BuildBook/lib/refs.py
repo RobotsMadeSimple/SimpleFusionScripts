@@ -8,7 +8,7 @@ import time
 import adsk.core
 import adsk.fusion
 
-from . import hardware, model
+from . import hardware, model, paths
 
 
 def make_ref(occ):
@@ -136,7 +136,7 @@ def path_index(design):
 _missing_tokens = set()     # tokens a design-wide search already failed to find
 _labels = None              # "component id|name" -> short hardware label ("" = none)
 _labels_dirty = False
-_LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "cache", "labels.json")
+_LABEL_FILE = paths.data_dir("cache", "labels.json")     # per user (lib/paths.py)
 
 
 def _label_cache():

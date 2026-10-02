@@ -1,0 +1,10 @@
+{
+    "displayName": "BuildBook",
+    "company": "Robots Made Simple",
+    "namespace": "com.robotsmadesimple.buildbook",
+    "url": "https://github.com/RobotsMadeSimple/SimpleFusionScripts",
+    "documentation": "https://github.com/RobotsMadeSimple/SimpleFusionScripts/tree/main/BuildBook#readme",
+    "email": "",
+    "upgradeCode": "{3DEBA407-08AE-4C1E-921B-2034F0DB4B64}",
+    "description": "Make step-by-step build manuals from your Fusion assembly: sections and steps, exploded views with trail lines, annotated pictures, parts lists and a PDF manual."
+}

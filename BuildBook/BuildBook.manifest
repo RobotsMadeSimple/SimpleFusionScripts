@@ -2,10 +2,13 @@
     "autodeskProduct": "Fusion360",
     "type": "addin",
     "id": "02951691-1cde-42b4-9dd6-b2bed2326aec",
-    "author": "Lucas Polodna",
-    "description": { "": "Build-manual sections, steps, exploded views and trail lines." },
-    "version": "0.1.0",
+    "author": "Robots Made Simple",
+    "description": {
+        "": "Make step-by-step build manuals from your assembly: sections and steps, exploded views with trail lines, annotated pictures, parts lists and a PDF manual. The model itself never moves."
+    },
+    "version": "1.0.0",
     "runOnStartup": true,
     "supportedOS": "windows|mac",
-    "editEnabled": true
+    "editEnabled": true,
+    "iconFilename": "resources/BuildBook/32x32.png"
 }

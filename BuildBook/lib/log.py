@@ -1,4 +1,4 @@
-"""Plain-text log at BuildBook/logs/buildbook.log (tracebacks + timings)."""
+"""Plain-text log (tracebacks + timings) in the per-user data folder: <data>/logs/buildbook.log (lib/paths.py)."""
 
 import datetime
 import os
@@ -6,7 +6,9 @@ import time
 import traceback
 from contextlib import contextmanager
 
-_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "logs")
+from . import paths
+
+_LOG_DIR = paths.data_dir("logs")
 _LOG_PATH = os.path.join(_LOG_DIR, "buildbook.log")
 _MAX_BYTES = 2 * 1024 * 1024
 

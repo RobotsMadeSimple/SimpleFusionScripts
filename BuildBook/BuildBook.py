@@ -19,7 +19,7 @@ import adsk.core
 import adsk.fusion
 
 from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
-from .lib import capture, crop, explode, hardware, log, manual_pdf, model, partthumbs, pictures, refs
+from .lib import capture, crop, explode, hardware, log, manual_pdf, model, partthumbs, paths, pictures, refs
 from .lib.overlay import CropOverlay
 from .lib import scene as scene_mod
 from .lib.scene import Scene
@@ -444,7 +444,7 @@ class Controller:
         elif action == "openExportFolder":
             folder = capture.export_folder(manual)
             os.makedirs(folder, exist_ok=True)
-            os.startfile(folder)
+            paths.open_path(folder)
             return
         elif action == "closeView":
             self.close_view()
@@ -914,7 +914,7 @@ class Controller:
         self.notify("PDF saved to " + out_path)
         self.push_state()
         try:
-            os.startfile(out_path)          # open it (Windows)
+            paths.open_path(out_path)       # open it in the PDF viewer
         except Exception:
             pass
 
@@ -1356,11 +1356,19 @@ def run(context):
     try:
         _ctrl = Controller(app)
         log.info("BuildBook starting")
+        try:
+            moved = paths.migrate_old_files()       # thumbnails / label cache from older versions
+            if moved:
+                log.info("copied {} file(s) from the add-in folder to {}".format(moved, paths.data_dir()))
+        except Exception:
+            log.error("copy older files")
 
         cmd_def = ui.commandDefinitions.itemById(COMMAND_ID)
         if not cmd_def:
             cmd_def = ui.commandDefinitions.addButtonDefinition(
-                COMMAND_ID, "BuildBook", "Build-manual sections, steps and exploded views")
+                COMMAND_ID, "BuildBook", "Make step-by-step build manuals: sections, steps, exploded views, "
+                "annotated pictures, parts lists and a PDF",
+                os.path.join(paths.ADDIN_DIR, "resources", "BuildBook"))
         _add(cmd_def.commandCreated, ShowPaletteHandler())
 
         _ctrl.explode.register(ui)
