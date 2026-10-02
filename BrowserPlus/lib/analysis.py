@@ -32,19 +32,34 @@ def is_self_or_ancestor(candidate, path):
 def for_part(records, path):
     """What holds `path`: records on the part itself, and records on its parent assemblies.
 
-    Returns {"direct": [(other part path or "", [records])], "inherited": [(ancestor, [records])]}.
+    For an assembly, its parts count as it: records between one of its parts and something
+    outside are direct, and records between two of its own parts are "internal".
+
+    Returns {"direct": [(other part path or "", [records])], "inherited": [(ancestor, [records])],
+             "internal": [records]}.
     Direct records are grouped by the part on the other end (sorted by it);
     a record with several other parts appears under each. Records with no
     other part (e.g. joined to the root's origin) group under "".
     """
     direct = {}
     inherited = {}
+    internal = []
+
+    def within(p):
+        return p == path or p.startswith(path + PATH_SEP)
+
     for rec in records:
         parts = rec["parts"]
-        if path in parts:
-            others = [p for p in parts if p != path] or [""]
-            for other in others:
-                direct.setdefault(other, []).append(rec)
+        mine = [p for p in parts if within(p)]
+        if mine:
+            others = [p for p in parts if p and not within(p)]
+            if others:
+                for other in others:
+                    direct.setdefault(other, []).append(rec)
+            elif len(set(mine)) > 1:
+                internal.append(rec)            # between two of the assembly's own parts
+            else:
+                direct.setdefault("", []).append(rec)
             continue
         for anc in ancestors(path):
             if anc in parts:
@@ -53,6 +68,7 @@ def for_part(records, path):
     return {
         "direct": sorted(direct.items(), key=lambda kv: (kv[0] == "", kv[0].lower())),
         "inherited": sorted(inherited.items(), key=lambda kv: len(kv[0])),
+        "internal": internal,
     }
 
 
@@ -103,9 +119,12 @@ def problems(records):
     return bad
 
 
-def graph(records, parts):
+def graph(records, parts, roots=None):
     """Connection map: nodes are parts that appear in records (plus floating ones),
     edges are records between two parts.
+
+    With `roots` ({path: assembly counted as one part}, layout.one_part_roots) a part inside
+    such an assembly is drawn as that assembly: one node, and relationships inside it left out.
 
     Rigid groups link their parts in a chain (not all pairs) to keep the map
     readable; records with one part become a self-edge to a "Ground" node.
@@ -113,11 +132,19 @@ def graph(records, parts):
              "edges": [{"source", "target", "record", "kind", "health", "suppressed"}]}.
     """
     names = {p["path"]: p for p in parts}
-    float_set = set(floating(records, parts))
+    roots = roots or {}
+
+    def node(path):
+        return roots.get(path, path) if path else path
+
+    float_set = set(node(p) for p in floating(records, parts))
+    grounded = set(node(p["path"]) for p in parts if p.get("grounded"))
     edges = []
     used = set()
     for rec in records:
-        ps = list(dict.fromkeys(rec["parts"]))
+        ps = list(dict.fromkeys(node(p) for p in rec["parts"]))
+        if len(rec["parts"]) > 1 and len(ps) == 1:
+            continue                    # inside one assembly: not drawn
         if rec["kind"] == "rigidGroup" or len(ps) > 2:
             pairs = list(zip(ps, ps[1:]))
         elif len(ps) == 2:
@@ -142,7 +169,7 @@ def graph(records, parts):
                           "degree": degree.get("", 0)})
             continue
         part = names.get(path, {"name": path.split(PATH_SEP)[-1]})
-        nodes.append({"id": path, "name": part.get("name", path), "grounded": bool(part.get("grounded")),
+        nodes.append({"id": path, "name": part.get("name", path), "grounded": path in grounded,
                       "floating": path in float_set, "degree": degree.get(path, 0)})
     return {"nodes": nodes, "edges": edges}
 

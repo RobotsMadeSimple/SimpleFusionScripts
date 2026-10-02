@@ -51,6 +51,12 @@ class ForPartTests(unittest.TestCase):
         out = analysis.for_part(RECORDS, "Gearbox:1")
         self.assertEqual(out["direct"][-1][0], "")
 
+    def test_assembly_counts_its_parts(self):
+        records = RECORDS + [rec("i1", "constraint", ["Gearbox:1+Shaft:1", "Gearbox:1+Gear:1"], "Inside")]
+        out = analysis.for_part(records, "Gearbox:1")
+        self.assertEqual([r["id"] for r in dict(out["direct"])["Pulley:2"]], ["j4"])
+        self.assertEqual([r["id"] for r in out["internal"]], ["i1"])
+
     def test_inherited_from_parent_assembly(self):
         out = analysis.for_part(RECORDS, "Gearbox:1+Shaft:1")
         self.assertEqual([r["id"] for r in dict(out["direct"])["Pulley:2"]], ["j4"])

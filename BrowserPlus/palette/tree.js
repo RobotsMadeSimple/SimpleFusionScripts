@@ -60,7 +60,8 @@
   // ------------------------------------------------------------ model
 
   function build(st) {
-    var parts = st.parts || {}, tree = st.tree || {}, place = tree.place || {};
+    var parts = st.parts || {}, tree = st.tree || {}, place = tree.place || {}, order = tree.order || {};
+    var scopes = {}, pathScope = {};     // scope -> its list's keys in display order; part -> its list's scope
     var folders = tree.folders || [];
     var flt = {};
     (st.floating || []).forEach(function (p) { flt[p] = 1; });
@@ -117,6 +118,23 @@
           out.push(g);
         } else out.push(partNode(p));
       });
+      // Your drag order (layout "order"): listed first in that order, the rest after as before.
+      var mine = order[scope];
+      if (mine && mine.length && !sort) {
+        var rank = {};
+        mine.forEach(function (k, i) { rank[k] = i; });
+        out = out.map(function (n, i) { return { n: n, i: i }; }).sort(function (a, b) {
+          var ra = rank[nodeKey(a.n)], rb = rank[nodeKey(b.n)];
+          if (ra == null) ra = 1e9 + a.i;
+          if (rb == null) rb = 1e9 + b.i;
+          return ra - rb;
+        }).map(function (x) { return x.n; });
+      }
+      out.forEach(function (n) {
+        n.scope = scope;
+        (n.t === 'group' ? n.paths : [n.path]).forEach(function (q) { pathScope[q] = scope; });
+      });
+      scopes[scope] = out.map(nodeKey);
       return out;
     }
 
@@ -131,7 +149,13 @@
     }
 
     var roots = rootFolders.map(folderNode).concat(groupList(inFolder[''], 'f:', false));
-    return { roots: roots, fmap: fmap, gmap: gmap, pmap: pmap, folders: folders, total: Object.keys(parts).length };
+    return { roots: roots, fmap: fmap, gmap: gmap, pmap: pmap, folders: folders, total: Object.keys(parts).length,
+             scopes: scopes, pathScope: pathScope };
+  }
+
+  // A list entry's key in the drag order: a part's path, or "c:<component>" for a group of copies.
+  function nodeKey(n) {
+    return n.t === 'group' ? 'c:' + (S.parts[n.paths[0]] || {}).componentId : n.path;
   }
 
   // ------------------------------------------------------------ search
@@ -206,7 +230,7 @@
       (n.flt ? '<span class="t-warn" title="' + esc(fltTitle(n.flt)) + '">' + n.flt + '</span>' : '') +
       '<span class="t-count">' + n.count + '</span>' +
       '<span class="t-tools">' +
-        (has ? tb('select', 'Select in Fusion', I.select) + tb('isolate', 'Isolate (hide everything else)', I.isolate) : '') +
+        (has ? tb('isolate', 'Isolate (hide everything else)', I.isolate) : '') +
         (f.auto ? '' : tb('sub', 'New sub-folder', I.folderPlus) + tb('rename', 'Rename (F2)', BP.ICON.rename) +
           tb('delete', 'Delete folder (its contents move up)', BP.ICON.del, 'danger')) +
       '</span></div>');
@@ -224,17 +248,18 @@
     var tip = info.hw ? (info.component || info.name) + ' · ' + p : p;
     order.push(p);
     h.push('<div class="t-row t-part' + (o ? ' open' : '') + (sel.paths[p] ? ' sel' : '') + (vis ? '' : ' t-off') +
-      '" data-k="part" data-path="' + esc(p) + '" data-key="' + esc(key) + '" style="--d:' + depth + '">' +
+      '" data-k="part" data-path="' + esc(p) + '" data-key="' + esc(key) + '" data-scope="' + esc(n.scope || '') +
+      '" data-okey="' + esc(nodeKey(n)) + '" style="--d:' + depth + '">' +
       (hasKids ? '<span class="t-caret" data-act="toggle">' + I.caret + '</span>' : '<span class="t-caret none"></span>') +
       eyeBtn(vis, 'this part') +
-      '<span class="t-ico">' + I.part + '</span>' +
+      BPThumbs.html(info.componentId, p, '<span class="t-ico">' + I.part + '</span>') +
       '<span class="t-name" title="' + esc(tip) + '">' + lab + '</span>' +
       (n.flt && !hasKids ? '<span class="t-dot" title="' + esc(fltTitle(1)) + '"></span>' : '') +
       (hasKids && n.flt ? '<span class="t-warn" title="' + esc(fltTitle(n.flt)) + '">' + n.flt + '</span>' : '') +
       oneTag(info) +
       (hasKids && !info.asOne ? '<span class="t-count">' + n.count + '</span>' : '') +
       '<span class="t-tools">' +
-        tb('select', 'Select in Fusion', I.select) + tb('isolate', 'Isolate (hide everything else)', I.isolate) +
+        tb('isolate', 'Isolate (hide everything else)', I.isolate) +
         tb('holds', 'What holds it (opens the Part tab)', I.link) +
         (info.asOne || info.split ? tb('one', info.asOne ? 'Split: list its parts in the BOM instead of this assembly'
           : 'Count as one part in the BOM again', I.one) : '') +
@@ -254,14 +279,16 @@
     g.paths.forEach(function (p) { if (!sel.paths[p]) all = false; });
     if (!o) g.paths.forEach(function (p) { order.push(p); });
     h.push('<div class="t-row t-group' + (o ? ' open' : '') + (all ? ' sel' : '') + (vis ? '' : ' t-off') +
-      '" data-k="group" data-key="' + esc(g.key) + '" style="--d:' + depth + '">' +
+      '" data-k="group" data-key="' + esc(g.key) + '" data-scope="' + esc(g.scope || '') +
+      '" data-okey="' + esc(nodeKey(g)) + '" style="--d:' + depth + '">' +
       '<span class="t-caret" data-act="toggle">' + I.caret + '</span>' +
       eyeBtn(vis, 'all ' + g.paths.length + ' instances') +
-      '<span class="t-ico">' + I.group + '</span>' +
+      BPThumbs.html((S.parts[g.paths[0]] || {}).componentId, g.paths[0], '<span class="t-ico">' + I.group + '</span>') +
       '<span class="t-name">' + esc(g.label) + ' <span class="t-x">\u00d7' + g.paths.length + '</span></span>' +
       (g.flt ? '<span class="t-warn" title="' + esc(fltTitle(g.flt)) + '">' + g.flt + '</span>' : '') +
       '<span class="t-tools">' +
-        tb('select', 'Select all in Fusion', I.select) + tb('isolate', 'Isolate (hide everything else)', I.isolate) +
+        tb('isolate', 'Isolate (hide everything else)', I.isolate) +
+        tb('holds', 'What holds them (opens the Part tab with all ' + g.paths.length + ')', I.link) +
         tb('delPart', 'Delete all ' + g.paths.length + ' from the design (click twice)', BP.ICON.del, 'danger') +
       '</span></div>');
     if (o) nodes(g.items, depth + 1, h);
@@ -473,7 +500,10 @@
     }
     if (act === 'select') return BP.send('selectParts', { paths: rowPaths(row) });
     if (act === 'isolate') return BP.send('isolate', { paths: rowPaths(row), label: rowLabel(row) });
-    if (act === 'holds') return BP.focusPart(row.getAttribute('data-path'));
+    if (act === 'holds') {
+      if (k === 'group') return BP.focusParts(rowPaths(row));
+      return BP.focusPart(row.getAttribute('data-path'));
+    }
     if (act === 'one') {
       var info = BP.state().parts[row.getAttribute('data-path')];
       if (info) BP.send('asOne', { componentId: info.componentId, on: !info.asOne });
@@ -685,6 +715,8 @@
     var el = document.elementFromPoint(e.clientX, e.clientY);
     if (!el) return null;
     if (el.closest('.t-topzone')) return { kind: 'top' };
+    var item = drag.kind !== 'folder' && el.closest('.t-row[data-k="part"], .t-row[data-k="group"]');
+    if (item && pane.contains(item)) return itemTarget(e, item);
     var row = el.closest('.t-row[data-k="folder"]');
     if (!row || !pane.contains(row)) return null;
     var id = row.getAttribute('data-id'), fn = model.fmap[id];
@@ -698,6 +730,34 @@
     return { kind: 'folder', id: id, pos: pos, row: row };
   }
 
+  // Dropping above / below a part puts the dragged parts there in that list (into its folder
+  // first if they came from elsewhere). Not into an automatic Hardware folder, nor under another
+  // assembly (parts stay with their own assembly).
+  function itemTarget(e, row) {
+    var scope = row.getAttribute('data-scope'), okey = row.getAttribute('data-okey');
+    if (!scope || !model.scopes[scope]) return null;
+    if (scope.indexOf('f:') === 0) {
+      var fid = scope.slice(2), fn = fid ? model.fmap[fid] : null;
+      if (fid && (!fn || fn.f.auto)) return null;
+    } else if (!drag.paths.every(function (p) { return model.pathScope[p] === scope; })) return null;
+    if (dragKeys(scope).indexOf(okey) >= 0) return null;          // onto itself
+    var r = row.getBoundingClientRect();
+    return { kind: 'item', scope: scope, okey: okey, pos: e.clientY - r.top < r.height / 2 ? 'before' : 'after', row: row };
+  }
+
+  // The dragged parts' keys in a list: copies of one part (several of them, or one joining copies
+  // already there) go together as "c:<component>".
+  function dragKeys(scope) {
+    var keys = model.scopes[scope] || [], out = [], byC = {};
+    drag.paths.forEach(function (p) { var c = (S.parts[p] || {}).componentId; byC[c] = (byC[c] || 0) + 1; });
+    drag.paths.forEach(function (p) {
+      var c = (S.parts[p] || {}).componentId;
+      var k = c && (byC[c] > 1 || keys.indexOf('c:' + c) >= 0) ? 'c:' + c : p;
+      if (out.indexOf(k) < 0) out.push(k);
+    });
+    return out;
+  }
+
   function onDragMove(e) {
     if (!drag) return;
     if (e.buttons === 0) { endDrag(false); return; }
@@ -708,7 +768,7 @@
     ghost.style.left = (e.clientX + 12) + 'px';
     ghost.style.top = (e.clientY + 8) + 'px';
     var t = findTarget(e);
-    if (!(t && hot && t.kind === hot.kind && t.id === hot.id && t.pos === hot.pos)) setHot(t);
+    if (!(t && hot && t.kind === hot.kind && t.id === hot.id && t.pos === hot.pos && t.row === hot.row)) setHot(t);
     var r = pane.getBoundingClientRect();
     if (e.clientY < r.top + 28) pane.scrollTop -= 10;
     else if (e.clientY > r.bottom - 28) pane.scrollTop += 10;
@@ -732,6 +792,17 @@
       else if (t.pos === 'into') { BP.send('folderMove', { id: drag.id, parent: t.id, before: null }); open['f:' + t.id] = true; saveOpen(); }
       else if (t.pos === 'before') BP.send('folderMove', { id: drag.id, parent: tf.f.parent || null, before: t.id });
       else BP.send('folderMove', { id: drag.id, parent: tf.f.parent || null, before: nextSibling(tf, drag.id) });
+      return;
+    }
+    if (t.kind === 'item') {
+      var moving = dragKeys(t.scope);
+      var keys = model.scopes[t.scope].filter(function (k) { return moving.indexOf(k) < 0; });
+      var at = keys.indexOf(t.okey);
+      if (at < 0) at = keys.length; else if (t.pos === 'after') at += 1;
+      keys.splice.apply(keys, [at, 0].concat(moving));
+      var here = drag.paths.every(function (p) { return model.pathScope[p] === t.scope; });
+      BP.send('treeOrder', { scope: t.scope, keys: keys, paths: here ? [] : drag.paths,
+                             folder: here || t.scope.indexOf('f:') !== 0 ? null : t.scope.slice(2) });
       return;
     }
     if (t.kind === 'folder') { open['f:' + t.id] = true; saveOpen(); }

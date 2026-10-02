@@ -23,21 +23,31 @@ import adsk.core
 import adsk.fusion
 
 from .lib import (actions, analysis, bom, clipboard, collect, components, faces, features, hardware, layout, log,
-                  textselect, visibility)
+                  partthumbs, textselect, visibility)
 
 PALETTE_ID = "browserPlusPalette"
 PALETTE_NAME = "Browser+"
 COMMAND_ID = "browserPlusShow"
 DELETE_COMMAND_ID = "browserPlusDeleteParts"   # deleting parts as one Fusion command = one undo step
 FILL_EVENT = "browserPlusFillDetails"    # custom event: read component details a batch at a time
+RELOAD_EVENT = "browserPlusReload"       # custom event: reload the add-in's code (the panel's reload button)
 FILL_BUDGET = 0.15                       # seconds of slow reads per batch, so Fusion stays responsive
 
 _handlers = []
+_events = []          # (event, handler) pairs, for reload_addin
 _ctrl = None
 
 # Commands that never change joints (don't re-read the design after them).
 _QUIET_COMMANDS = ("SelectCommand", "CommitCommand", "PanCommand", "OrbitCommand", "ZoomCommand",
                    "FreeOrbitCommand", "LookAtCommand", "ViewCubeCommand")
+# Any command whose id has one of these only moves the view (ConstrainedOrbitCommand,
+# SetOrbitCenterCommand, ZoomWindowCommand, FitCommand, ...).
+_VIEW_WORDS = ("orbit", "pan", "zoom", "lookat", "viewcube", "fit", "camera")
+
+
+def _quiet(command_id):
+    low = command_id.lower()
+    return command_id in _QUIET_COMMANDS or any(w in low for w in _VIEW_WORDS)
 
 
 class Controller:
@@ -47,6 +57,7 @@ class Controller:
         self.records, self.parts, self.entities = [], [], {}
         self.dirty = True
         self.focus = None           # part path the Part tab is about
+        self.focus_group = None     # or every copy of one part (a group row in the tree): [paths]
         self.follow = True          # follow the canvas selection
         self._selecting = False     # our own selection changes: don't follow them
         self.edit_commands = None
@@ -74,6 +85,9 @@ class Controller:
         # Clicking a feature rolls the timeline to it; this is where the marker was before
         # (None = not rolled by a click), put back by roll_home().
         self._roll_home, self._rolled_ent, self._rolled_at = None, None, 0.0
+        self._ending = None         # the command just ending (on_command_done)
+        self._edited_rid = None     # the mate view Edit closed, shown again when the editor ends
+        self.parts_gen = 0          # bumped on every re-read: the panel re-checks its part pictures
 
     def design(self):
         return adsk.fusion.Design.cast(self.app.activeProduct)
@@ -85,6 +99,11 @@ class Controller:
         if design is None:
             self.records, self.parts, self.entities = [], [], {}
             return
+        if (self.dirty or force) and self._command_open(self._ending):
+            # Another command (e.g. Fusion's relationship editor) is open: reading the design now
+            # (which can roll the timeline back) can crash Fusion. Keep the last read; it's read
+            # again when that command ends (on_command_done).
+            return
         if self.dirty or force:
             self._features_dirty = True
             self.info.set_document(collect._document_key(design))
@@ -92,6 +111,7 @@ class Controller:
                 self.records, self.parts, self.entities = collect.collect(design, self.info)
             self._start_fill()
             self.dirty = False
+            self.parts_gen += 1
             self._load_layout(design)
 
     # ------------------------------------------------------------ folders (layout) and BOM
@@ -142,6 +162,7 @@ class Controller:
             "folders": layout.folders_view(self.layout, placement),
             "place": placement,
             "hardwareAuto": bool(self.layout.get("hardwareAuto")),
+            "order": self.layout.get("order") or {},
         }, placement
 
     def _bom_state(self, placement, folders):
@@ -223,6 +244,12 @@ class Controller:
         elif action == "assign":
             self._assign(data.get("paths") or [], data.get("folder"))
             self._save_layout()
+        elif action == "treeOrder":
+            # A drag to a place in a list: moved into that folder first if it came from elsewhere.
+            if data.get("paths") and data.get("folder") is not None:
+                self._assign(data["paths"], data["folder"])
+            layout.set_order(self.layout, data.get("scope") or "f:", data.get("keys") or [])
+            self._save_layout()
         elif action == "asOne":
             # "on" = count the assembly as one part (the default), off = split it into its parts
             layout.set_split(lay, data.get("componentId"), not data.get("on"))
@@ -249,8 +276,13 @@ class Controller:
             finally:
                 self._selecting = False
         elif action == "selectParts":
-            self._select(self.occurrences(data.get("paths") or []))
-            return True                 # nothing in the panel changes
+            paths = data.get("paths") or []
+            self._select(self.occurrences(paths))
+            # The Part tab follows picks made here too (Fusion's selection event ignores our own):
+            # a single part clicked, or every copy of one part (a group row), when following.
+            if self.follow and self._set_focus(paths):
+                self.push_state()
+            return True
         elif action == "isolate":
             self._clear_mates()
             self.iso.restore()
@@ -422,22 +454,90 @@ class Controller:
         return ent if ent is not None and ent.isValid else None
 
     def _show_mates(self, rec):
-        """Mate view of a relationship (or back to normal for anything else)."""
+        """Mate view of a relationship or joint (or back to normal for anything else)."""
         self._selecting = True      # light bulbs going off can change Fusion's selection
         try:
-            if rec is None or rec["kind"] != "constraint":
+            if rec is None or rec["kind"] not in ("constraint", "joint", "asBuilt"):
                 self._clear_mates()
                 return
+            details = rec["details"] if rec["kind"] == "constraint" else self._joint_details(rec)
             self._mate_rid = rec["id"]
+            # A part inside an assembly counted as one part (as in the BOM) shows as that whole
+            # assembly: see-through, kept when hiding the rest. The mated faces stay the part's.
+            roots = layout.one_part_roots(self.parts, (self.layout or {}).get("split"))
+            shown = list(dict.fromkeys(roots.get(p, p) for p in rec["parts"] if p))
             with log.timed("mate view"):
-                drawn = self.mates.show(self.design(), rec["name"], rec["details"], rec["parts"], self.occurrence,
+                drawn = self.mates.show(self.design(), rec["name"], details, shown, self.occurrence,
                                         ghost=self.mate_ghost, isolate=self.mate_isolate)
-            if not drawn and rec["details"]:
+            if not drawn and details:
                 log.info("no mated faces to show for {}".format(rec["name"]))
         except Exception:
             log.error("show mated faces")
         finally:
             self._selecting = False
+
+    def _hold_selection(self):
+        """While the mate view is up, keep only the design's origin point selected: tiny (usually
+        hidden), so no selection highlight covers the coloured faces, and any click in the canvas
+        (empty space or a part) changes the selection, which ends the view (on_selection)."""
+        if not self.mates.active:
+            return
+        self._selecting = True
+        try:
+            self.ui.activeSelections.clear()
+            design = self.design()
+            if design is not None:
+                self.ui.activeSelections.add(design.rootComponent.originConstructionPoint)
+        except Exception as error:
+            log.info("mate view: couldn't hold the origin selection ({})".format(error))
+        finally:
+            self._selecting = False
+
+    def _joint_details(self, rec):
+        """A joint's two sides for the mate view, read live: the face / edge / point each side
+        snaps to, and the joint origin (a cross), as faces.MateHighlight geometry refs."""
+        joint = self.entity(rec["id"])
+        if joint is None:
+            return []
+        try:
+            if rec["kind"] == "asBuilt":
+                sides = [joint.geometry]
+            else:
+                sides = [joint.geometryOrOriginOne, joint.geometryOrOriginTwo]
+        except Exception:
+            log.error("joint geometry " + rec["name"])
+            return []
+        shapes, points = [], []
+        for i, side in enumerate(sides):
+            part = rec["parts"][i] if i < len(rec["parts"]) else None
+            origin = adsk.fusion.JointOrigin.cast(side)
+            geo = adsk.fusion.JointGeometry.cast(origin.geometry if origin is not None else side)
+            shape = point = None
+            in_part = False         # the geometry is the part's own (not placed in the assembly)
+            what = "nothing"
+            if geo is not None:
+                try:
+                    ent = geo.entityOne
+                    if ent is not None:
+                        in_part = getattr(ent, "assemblyContext", None) is None and bool(part)
+                        token = ent.entityToken
+                        what = "{}{}".format(ent.objectType.split("::")[-1], " (part space)" if in_part else "")
+                        if token:
+                            shape = {"token": token, "type": ent.objectType, "part": part}
+                except Exception:
+                    log.error("joint side {} entity".format(i + 1))
+                try:
+                    p = geo.origin
+                    point = {"point": [p.x, p.y, p.z], "part": part, "partSpace": in_part}
+                except Exception:
+                    pass
+            elif origin is None:
+                what = side.objectType if side is not None else "none"
+            log.info("joint {} side {} ({}): {}{}".format(rec["name"], i + 1, part or "root", what,
+                                                         " via a joint origin" if origin is not None else ""))
+            shapes.append(shape)
+            points.append(point)
+        return [{"geometry": shapes}, {"geometry": points}]
 
     def _clear_mates(self):
         """Leave mate view (parts visible again). True if it was on."""
@@ -502,11 +602,18 @@ class Controller:
         roots = layout.one_part_roots(self.parts, self.layout.get("split"))
         # Parts only hidden for the moment (mate view, isolate) are shown as visible: that's their real state.
         temp_hidden = self.mates.hidden_paths() | self.iso.paths()
+        temp_shown = self.mates.shown_paths()       # hidden parts shown just for the mate view
         paths = {p["path"] for p in self.parts}
+        if self.focus_group:
+            self.focus_group = [p for p in self.focus_group if p in paths]
+            if len(self.focus_group) < 2:
+                self.focus_group = None
         if self.focus and self.focus not in paths:
-            self.focus = None
+            self.focus, self.focus_group = None, None
         focus = None
-        if self.focus:
+        if self.focus_group:
+            focus = self._group_focus(self.focus_group)
+        elif self.focus:
             held = analysis.for_part(self.records, self.focus)
             part = next(p for p in self.parts if p["path"] == self.focus)
             focus = {
@@ -516,6 +623,7 @@ class Controller:
                 "grounded": part["grounded"],
                 "direct": [[other, [r["id"] for r in recs]] for other, recs in held["direct"]],
                 "inherited": [[anc, [r["id"] for r in recs]] for anc, recs in held["inherited"]],
+                "internal": [r["id"] for r in held["internal"]],
             }
         return {
             "error": "",
@@ -523,7 +631,8 @@ class Controller:
             "records": self.records,
             "parts": {p["path"]: {"name": p["name"], "component": p["component"], "grounded": p["grounded"],
                                   "componentId": p["componentId"], "leaf": p["leaf"], "bodies": p["bodies"],
-                                  "visible": p["visible"] or p["path"] in temp_hidden, "hw": p["hw"],
+                                  "visible": (p["visible"] or p["path"] in temp_hidden) and p["path"] not in temp_shown,
+                                  "hw": p["hw"],
                                   "asOne": roots.get(p["path"]) == p["path"],     # an assembly counted as one part
                                   "split": not p["leaf"] and p["path"] not in roots,  # an assembly listed by its parts
                                   "inOne": roots.get(p["path"], p["path"]) != p["path"]}
@@ -535,7 +644,8 @@ class Controller:
             "problems": [r["id"] for r in analysis.problems(self.records)],
             "floating": analysis.floating(self.records, self.parts),
             "duplicates": analysis.duplicates(self.records),
-            "graph": analysis.graph(self.records, self.parts),
+            "graph": dict(analysis.graph(self.records, self.parts, roots),
+                          focusNode=roots.get(self.focus, self.focus) if self.focus else None),
             "focus": focus,
             "follow": self.follow,
             "canEdit": bool(self.edit_commands),
@@ -545,6 +655,50 @@ class Controller:
             "notice": self._notice,
             **self._part_state(design),
             "featRolled": self._roll_home is not None,
+            "partsGen": self.parts_gen,
+        }
+
+    def _set_focus(self, paths):
+        """Point the Part tab at one part, or at every copy of one part (several paths of the
+        same component). Anything else (a folder's mix) leaves it. True if it changed."""
+        known = {p["path"]: p for p in self.parts}
+        paths = [p for p in dict.fromkeys(paths or []) if p in known]
+        if len(paths) == 1:
+            group = None
+        elif len(paths) > 1 and len({known[p]["componentId"] for p in paths}) == 1:
+            group = paths
+        else:
+            return False
+        if paths[0] == self.focus and group == self.focus_group:
+            return False
+        self.focus, self.focus_group = paths[0], group
+        return True
+
+    def _group_focus(self, group):
+        """The Part tab for every copy of one part: their relationships together, grouped by the
+        part on the other end (each relationship once)."""
+        direct, inherited, internal = {}, {}, []
+        for path in group:
+            held = analysis.for_part(self.records, path)
+            internal.extend(r["id"] for r in held["internal"] if r["id"] not in internal)
+            for key, recs in held["direct"]:
+                if key in group:
+                    key = group[0]          # copies held to each other: one card, each relationship once
+                ids = direct.setdefault(key, [])
+                ids.extend(r["id"] for r in recs if r["id"] not in ids)
+            for key, recs in held["inherited"]:
+                ids = inherited.setdefault(key, [])
+                ids.extend(r["id"] for r in recs if r["id"] not in ids)
+        first = next(p for p in self.parts if p["path"] == group[0])
+        return {
+            "path": group[0],
+            "paths": group,
+            "name": "{} \u00d7{}".format(first["component"], len(group)),
+            "component": first["component"],
+            "grounded": any(p["grounded"] for p in self.parts if p["path"] in group),
+            "direct": sorted(([k, v] for k, v in direct.items()), key=lambda kv: (kv[0] == "", kv[0].lower())),
+            "inherited": sorted(([k, v] for k, v in inherited.items()), key=lambda kv: len(kv[0])),
+            "internal": internal,
         }
 
     # ------------------------------------------------------------ part mode
@@ -781,7 +935,37 @@ class Controller:
         finally:
             self._selecting = False
 
+    def _send_part_thumbs(self, wanted):
+        """wanted: [{"cid", "path", "have"}] for rows on screen. Replies {cid: {"key", "mesh"?}}: the
+        mesh only when the part changed since the panel's picture (its key differs from "have")."""
+        occs = {o.fullPathName: o for o in self.occurrences([w.get("path") for w in wanted])}
+        out = {}
+        started = time.perf_counter()
+        with log.timed("part pictures ({})".format(len(wanted))):
+            for w in wanted:
+                cid, occ = w.get("cid"), occs.get(w.get("path"))
+                if not cid or cid in out:
+                    continue
+                key = partthumbs.thumb_key(occ)
+                if key and key != w.get("have") and time.perf_counter() - started < 1.0:
+                    mesh = partthumbs.mesh_for(occ)
+                    out[cid] = {"key": key, "mesh": mesh} if mesh else {"key": ""}
+                elif key and key == w.get("have"):
+                    out[cid] = {"key": key}
+                elif not key:
+                    out[cid] = {"key": ""}        # no bodies: keep the icon
+                # else out of time: not answered, the panel asks again
+        log.info("part pictures: {} asked, {} found, {} drawn, {} without bodies".format(
+            len(wanted), len(occs), sum(1 for v in out.values() if v.get("mesh")),
+            sum(1 for v in out.values() if not v.get("key"))))
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        if palette is not None:
+            palette.sendInfoToHTML("partThumbs", json.dumps(out))
+
     def handle(self, action, data):
+        if action == "partThumbs":
+            self._send_part_thumbs(data.get("items") or [])
+            return
         rid = data.get("id")
         if self.layout is None and self.design() is not None:
             self.refresh_data()     # a tree / BOM action can arrive before the first state push
@@ -798,9 +982,12 @@ class Controller:
                 self.dirty = True
                 collect.clear_cache()
         elif action == "focus":
-            self.focus = data.get("path") or None
+            if data.get("paths"):
+                self._set_focus(data["paths"])
+            else:
+                self.focus, self.focus_group = data.get("path") or None, None
             if self.focus and data.get("select"):
-                self._select([self.occurrence(self.focus)])
+                self._select(self.occurrences(self.focus_group or [self.focus]))
         elif action == "follow":
             self.follow = bool(data.get("on"))
         elif action == "highlight":
@@ -808,7 +995,14 @@ class Controller:
             ent = self.entity(rid)
             was = self.mates.active
             self._show_mates(rec)
-            # In mate view the parts are hidden (redrawn see-through), so only the relationship is selected.
+            if self.mates.active:
+                # Mate view: the relationship isn't selected in Fusion (its highlight paints the whole
+                # parts blue over the see-through view); only the origin point is, so a click in the
+                # canvas ends the view. (Edit selects the relationship itself when it's pressed.)
+                self._hold_selection()
+                self.push_state()   # the mate-view bar
+                return
+            # Otherwise select it (and its parts) in Fusion.
             parts = [] if self.mates.active and self.mate_ghost else [self.occurrence(p) for p in rec["parts"]] if rec else []
             if rec and ent:
                 self._selecting = True
@@ -839,8 +1033,7 @@ class Controller:
             if self.mates.active and self._mate_rid:
                 self._show_mates(self.record(self._mate_rid))
         elif action == "clearMates":
-            self._clear_mates()
-            return
+            self._clear_mates()             # (then the push below: the bar stops saying "Showing ...")
         elif action == "selectPart":
             self._select([self.occurrence(data.get("path"))])
             return
@@ -850,7 +1043,9 @@ class Controller:
             actions.zoom_to(self.app, [self.occurrence(p) for p in paths if p])
             return
         elif action == "edit":
-            self._clear_mates()     # the editor needs the real parts to pick from
+            # The editor needs the real parts to pick from; the view comes back after (on_command_done).
+            self._edited_rid = self._mate_rid if self._mate_rid == rid else None
+            self._clear_mates()
             ent = self.entity(rid)
             if ent is None:
                 return
@@ -957,8 +1152,8 @@ class Controller:
         if occ is None:
             ctx = getattr(ent, "assemblyContext", None)
             occ = adsk.fusion.Occurrence.cast(ctx) if ctx is not None else None
-        if occ is not None and occ.fullPathName != self.focus:
-            self.focus = occ.fullPathName
+        if occ is not None and (occ.fullPathName != self.focus or self.focus_group):
+            self.focus, self.focus_group = occ.fullPathName, None
             self.push_state()
 
     def _check_mode(self):
@@ -975,14 +1170,34 @@ class Controller:
             self._last_mode = mode
             self.push_state()
 
+    def _command_open(self, ending=None):
+        """True while a Fusion command other than plain selecting (or `ending`) is running."""
+        try:
+            active = self.ui.activeCommand or ""
+        except Exception:
+            return False
+        return active not in ("", "SelectCommand", ending) and not _quiet(active)
+
     def on_command_done(self, command_id):
-        if command_id in _QUIET_COMMANDS or command_id.startswith(COMMAND_ID):
+        if _quiet(command_id) or command_id.startswith(COMMAND_ID):
             return
+        self._ending = command_id      # Fusion may still report it as active while it ends
         log.info("command finished: " + command_id)    # to learn Fusion's own edit commands
         low = command_id.lower()
-        if any(w in low for w in ("joint", "constraint", "relationship")):
-            collect.clear_cache()       # a relationship may have changed parts
+        # (Fusion's relationship editor is DcEditAssemblyMateCmd: "mate", not "relationship".)
+        if any(w in low for w in ("joint", "constraint", "relationship", "mate", "rigid", "motion", "asbuilt")):
+            collect.clear_cache()       # a relationship may have changed parts or faces
         self.dirty = True
+        # The mate view on show (or the one Edit closed) is drawn again from the new read, so an
+        # edit shows straight away.
+        again = self._mate_rid or self._edited_rid
+        self._edited_rid = None
+        if again:
+            self.refresh_data()
+            rec = self.record(again)
+            if rec is not None:
+                self._show_mates(rec)
+                self._hold_selection()
         self.push_state()
 
     def on_document_switch(self):
@@ -991,7 +1206,7 @@ class Controller:
         self.layout = None          # component facts are per design (set_document on the next read)
         # (The relationship cache is kept: it's per design, so switching back is instant.)
         self.dirty = True
-        self.focus = None
+        self.focus, self.focus_group = None, None
         self.push_state()
 
 
@@ -1008,6 +1223,10 @@ class PaletteHTMLHandler(adsk.core.HTMLEventHandler):
             event = adsk.core.HTMLEventArgs.cast(args)
             if event.action == "response":
                 return
+            if event.action == "reloadAddin":
+                # Not from here: this runs inside the panel's own event, and reloading deletes the panel.
+                adsk.core.Application.get().fireCustomEvent(RELOAD_EVENT, "")
+                return
             _ctrl.handle(event.action, json.loads(event.data) if event.data else {})
             event.returnData = "OK"
         except Exception:
@@ -1020,11 +1239,13 @@ class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
         try:
             ui = _ctrl.ui
             palette = ui.palettes.itemById(PALETTE_ID)
-            if not palette:
+            new = not palette
+            if new:
                 palette = ui.palettes.add(PALETTE_ID, PALETTE_NAME, _palette_url(), True, True, True, 420, 700)
-                palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
                 _add(palette.incomingFromHTML, PaletteHTMLHandler())
             palette.isVisible = True
+            if new:
+                _place_palette(ui, palette)
             _ctrl.dirty = True
         except Exception:
             log.error("show palette")
@@ -1099,13 +1320,115 @@ class DocSwitchHandler(adsk.core.DocumentEventHandler):
             log.error("document switch")
 
 
+def _place_palette(ui, palette):
+    """Start the panel under Fusion's browser: snapped below it when Fusion lists the browser
+    among its palettes, else docked left (where a pinned browser sits, so it stacks under it).
+    Only on the panel's first showing; after that it stays wherever the user moves it."""
+    ours = ("browserplus", "buildbook", "holethreadcallouts", "stockscout")
+    try:
+        ids = [ui.palettes.item(i).id for i in range(ui.palettes.count)]
+        log.info("palettes: " + ", ".join(ids))
+        browser = next((ui.palettes.itemById(i) for i in ids
+                        if "browser" in i.lower() and not i.lower().startswith(ours)), None)
+        if browser is not None and browser.isVisible:
+            palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+            if palette.snapTo(browser, adsk.core.PaletteSnapOptions.PaletteSnapOptionsBottom):
+                log.info("panel snapped under " + browser.id)
+                return
+    except Exception:
+        log.error("place panel under the browser")
+    palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateLeft
+    log.info("panel docked left")
+
+
 def _add(event, handler):
     event.add(handler)
     _handlers.append(handler)
+    _events.append((event, handler))      # detached again by reload_addin
+
+
+def _detach_events():
+    """Take this run's handlers off Fusion's events (a reload starts fresh ones)."""
+    for event, handler in _events:
+        try:
+            event.remove(handler)
+        except Exception:
+            pass
+    del _events[:]
+    del _handlers[:]
+
+
+def reload_addin():
+    """Stop, reload every module of the add-in from disk, start again and reopen the panel: picks
+    up new code (an update, an edit) without Fusion's Scripts and Add-Ins dialog."""
+    import importlib
+    import importlib.machinery
+    import sys
+    app = adsk.core.Application.get()
+    ui = app.userInterface
+    try:
+        log.info("reloading Browser+")
+        stop(None)
+        _detach_events()
+        package = log.__name__.rpartition(".lib.")[0]      # however Fusion named the add-in's package
+        # Submodules first (reloaded in place, so "from . import x" references stay good), then
+        # this module, whose "from .lib import x" lines pick up the new code.
+        for name in sorted(n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__):
+            module = sys.modules.get(name)
+            if module is not None:
+                importlib.reload(module)
+        # Fusion loads this file under a made-up module name importlib.reload can't find, so run the
+        # file's new code into the same module object instead (its globals become the new ones).
+        main = sys.modules[__name__]
+        importlib.machinery.SourceFileLoader(__name__, __file__).exec_module(main)
+        main.run(None)
+        cmd = ui.commandDefinitions.itemById(COMMAND_ID)
+        if cmd is not None:
+            cmd.execute()                       # reopen the panel
+        main.log.info("Browser+ reloaded")
+    except Exception:
+        log.error("reload")
+        ui.messageBox("Browser+ couldn't reload:\n{}\n\nUse Utilities > Scripts and Add-Ins to stop and run it.".format(
+            traceback.format_exc()))
+
+
+class ReloadHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        reload_addin()
+
+
+# Fusion can load the same add-in twice (e.g. from the AddIns folder and from a path added in
+# Scripts and Add-Ins). Two copies both answer the same buttons, so only the first one runs.
+_SINGLE_KEY = "_rms_browserplus_module"
+
+
+def _claim():
+    """True if this copy may run (no other copy of the add-in is running)."""
+    import sys
+    other = getattr(sys, _SINGLE_KEY, None)
+    if other and other != __name__ and other in sys.modules:
+        log.info("another copy of this add-in is already running ({}); this one ({}) stays off".format(
+            other, os.path.dirname(os.path.abspath(__file__))))
+        return False
+    setattr(sys, _SINGLE_KEY, __name__)
+    return True
+
+
+def _mine():
+    import sys
+    return getattr(sys, _SINGLE_KEY, None) == __name__
+
+
+def _release():
+    import sys
+    if _mine():
+        delattr(sys, _SINGLE_KEY)
 
 
 def run(context):
     global _ctrl
+    if not _claim():
+        return
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:
@@ -1136,12 +1459,20 @@ def run(context):
         except Exception:
             pass
         _add(app.registerCustomEvent(FILL_EVENT), FillHandler())
+        try:
+            app.unregisterCustomEvent(RELOAD_EVENT)
+        except Exception:
+            pass
+        _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
     except Exception:
         log.error("run")
         ui.messageBox("Browser+ failed to start:\n{}".format(traceback.format_exc()))
 
 
 def stop(context):
+    if not _mine():
+        return
+    _release()                  # (a reload claims it again in run)
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:
@@ -1167,6 +1498,10 @@ def stop(context):
         del_def = ui.commandDefinitions.itemById(DELETE_COMMAND_ID)
         if del_def:
             del_def.deleteMe()
+        # (An earlier version had a mate-view command; remove its definition if it's still there.)
+        old = ui.commandDefinitions.itemById("browserPlusMateView")
+        if old:
+            old.deleteMe()
         log.info("Browser+ stopped")
     except Exception:
         log.error("stop")

@@ -64,3 +64,8 @@
 
 .b-seccopy { opacity: 0; margin-left: 4px; padding: 0 2px; }
 .b-sec:hover .b-seccopy { opacity: 1; }
+
+/* Part pictures (thumbs.js) before the name */
+.b-namewrap { align-items: center; }
+.b-namewrap .pthumb { width: 44px; height: 44px; margin: -3px 2px -3px 0; }
+.b-row > td { vertical-align: middle; }

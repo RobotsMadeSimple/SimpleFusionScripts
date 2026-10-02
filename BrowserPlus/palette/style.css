@@ -127,7 +127,9 @@ body[data-tab="tree"] .mate-bar:not(.on), body[data-tab="bom"] .mate-bar:not(.on
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); }
 .dot.warning { background: var(--warning); }
 .dot.error { background: var(--danger); }
-.kind { font-size: 9px; text-transform: uppercase; letter-spacing: .03em; padding: 0 4px; border-radius: 6px; color: #fff; flex: none; }
+.kind { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; padding: 1px 6px 1px 4px;
+        border-radius: 8px; color: #fff; flex: none; white-space: nowrap; }
+.kind svg { width: 12px; height: 12px; fill: none; stroke: #fff; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .kind.joint { background: var(--k-joint); } .kind.asBuilt { background: var(--k-asBuilt); }
 .kind.constraint { background: var(--k-constraint); } .kind.rigidGroup { background: var(--k-rigidGroup); }
 .kind.motionLink { background: var(--k-motionLink); }
@@ -176,3 +178,24 @@ svg.map.panning { cursor: grabbing; }
 .map .edge.constraint { stroke: var(--k-constraint); } .map .edge.rigidGroup { stroke: var(--k-rigidGroup); }
 .map .edge.motionLink { stroke: var(--k-motionLink); } .map .edge.warning { stroke: var(--warning); }
 .map .edge.error { stroke: var(--danger); }
+
+/* Part pictures: a shaded picture drawn from a coarse mesh (thumbs.js); hover for a bigger one */
+.pthumb { flex: none; display: inline-block; border-radius: 3px; background: center / contain no-repeat; }
+.pthumb-pop { position: fixed; z-index: 60; width: 160px; height: 160px; pointer-events: none; border-radius: 6px;
+              background: var(--surface, #fff) center / 92% no-repeat; border: 1px solid var(--line);
+              box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+
+/* Part pictures in the mate groups (thumbs.js) */
+.part-thumb:empty { display: none; }
+.part-head .pthumb { width: 48px; height: 48px; }
+.group-head .pthumb { width: 36px; height: 36px; margin: -2px 0; }
+.group-title.with-pics { display: flex; align-items: center; gap: 4px; }
+.group-title.with-pics .pthumb { width: 30px; height: 30px; }
+.group-title.with-pics > span:last-child { margin-left: 4px; }
+
+/* Map: part pictures inside the nodes (clicks go to the circle under them) */
+.map .node image { pointer-events: none; }
+.map .node.pic.focus circle { fill: var(--surface); stroke: var(--accent); stroke-width: 3.5; }
+
+/* Part tab: a subassembly's card (relationships to several of its parts) */
+.group-head .group-sub { display: block; font-size: 10px; font-weight: 400; color: var(--muted); }

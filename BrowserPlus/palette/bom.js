@@ -274,7 +274,8 @@
         h += '<td class="b-r b-qty" title="' + esc(pathTitle(r)) + '">' + (r.qty == null ? '' : r.qty) + '</td>';
       } else if (c.id === 'name') {
         // Hardware: just the short name (full name in the tooltip) so rows stay one line.
-        h += '<td class="b-name"><div class="b-namewrap"><div class="b-nametext"' + (r.hw ? ' title="' + esc(r.name) + '"' : '') + '>' +
+        h += '<td class="b-name"><div class="b-namewrap">' + BPThumbs.html(r.componentId, (r.paths || [])[0], '') +
+          '<div class="b-nametext"' + (r.hw ? ' title="' + esc(r.name) + '"' : '') + '>' +
           (r.hw ? '<b class="b-hw">' + esc(r.hw) + '</b>' : esc(r.name)) +
           '</div>' + oneBtn(r) +
           '<button class="icon-btn b-holds" data-b="holds" title="What holds it">' + ICON.link + '</button></div></td>';

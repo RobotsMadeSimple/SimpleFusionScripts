@@ -86,3 +86,7 @@ body.t-dragging, body.t-dragging * { cursor: grabbing !important; }
 .btn.t-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .t-row.t-doomed { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .t-row.t-doomed .t-name { text-decoration: line-through; }
+
+/* Part pictures (thumbs.js): in place of the part icon */
+#treePane .t-row.t-part, #treePane .t-row.t-group { height: 38px; }
+.t-row .pthumb { width: 34px; height: 34px; }

@@ -11,6 +11,9 @@ attributes (group "BrowserPlus", name "layout"), so it travels with the file.
       "columns": [{"id": "c1", "name": "Vendor"}],                      # BOM columns of your own
       "values": {"<component id>": {"c1": "McMaster"}},                  # their values, per component
       "split": ["<component id>"],     # assemblies listed piece by piece in the BOM (the rest count as one part)
+      "order": {"<scope>": ["<path>" or "c:<component id>", ...]},     # your drag order of parts in a list
+               # scope: "f:<folder id>" ("f:" = top level) or "p:<assembly path>" (parts under it);
+               # "c:<id>" is a group of copies. Parts not listed follow, in design order.
       "featureTrees": {"<component id>": {"folders": [...], "items": {"<feature id>": {"folder", "name"}}}}
     }
 
@@ -39,7 +42,7 @@ VERSION = 1
 
 def empty():
     return {"version": VERSION, "folders": [], "items": {}, "hardwareAuto": True, "columns": [], "values": {},
-            "split": [], "featureTrees": {}}
+            "split": [], "featureTrees": {}, "order": {}}
 
 
 def load(text):
@@ -140,6 +143,15 @@ def move_folder(layout, folder_id, parent=None, before=None):
     index = next((i for i, g in enumerate(layout["folders"]) if g["id"] == before), len(layout["folders"]))
     layout["folders"].insert(index, f)
     return True
+
+
+def set_order(layout, scope, keys):
+    """Your order of the parts in one list (see "order" above)."""
+    keys = [k for k in dict.fromkeys(keys or []) if isinstance(k, str) and k][:5000]
+    if keys:
+        layout["order"][scope] = keys
+    else:
+        layout["order"].pop(scope, None)
 
 
 def assign(layout, paths, folder_id, tokens=None):

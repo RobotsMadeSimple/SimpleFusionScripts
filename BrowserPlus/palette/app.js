@@ -11,7 +11,40 @@
   var $ = function (id) { return document.getElementById(id); };
 
   var KIND_LABEL = { joint: 'Joint', asBuilt: 'As-built', constraint: 'Relation', rigidGroup: 'Rigid', motionLink: 'Link' };
-  var NO_BUSY = ['highlight', 'selectPart', 'zoom', 'edit', 'ready', 'follow', 'mateView', 'clearMates',
+  // Muted text under a row: what kind of record it is (the tag shows its type).
+  var KIND_NAME = { joint: 'Joint', asBuilt: 'As-built joint', constraint: 'Relationship', rigidGroup: 'Rigid group',
+                    motionLink: 'Motion link' };
+  // Type icons for the row tags (white strokes on the kind colour).
+  var TYPE_ICON = {
+    rigid: '<path d="M4.5 7.5V5.5a3.5 3.5 0 0 1 7 0v2"/><rect x="3" y="7.5" width="10" height="6.5" rx="1"/>',
+    revolute: '<path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.5v2.4h-2.4"/><circle cx="8" cy="8" r="1"/>',
+    slider: '<path d="M1.5 8h13M4 5.5 1.5 8 4 10.5M12 5.5 14.5 8 12 10.5"/><rect x="6" y="6" width="4" height="4"/>',
+    cylindrical: '<ellipse cx="8" cy="4" rx="4" ry="1.5"/><path d="M4 4v8c0 .8 1.8 1.5 4 1.5s4-.7 4-1.5V4M8 6.5v5M6.5 10 8 11.5 9.5 10"/>',
+    'pin-slot': '<rect x="1.5" y="5.5" width="13" height="5" rx="2.5"/><circle cx="5" cy="8" r="1.3"/><path d="M8 8h4.5"/>',
+    planar: '<path d="M1.5 11 5 4.5h9.5L11 11z"/><path d="M8 6.5v3M6.5 8h3"/>',
+    ball: '<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8c2 1.8 9 1.8 11 0M8 2.5c-1.8 2-1.8 9 0 11"/>',
+    inferred: '<circle cx="8" cy="8" r="5.5" stroke-dasharray="2 2"/><circle cx="8" cy="8" r="1.2"/>',
+    joint: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.5"/>',
+    mate: '<path d="M8 2v12"/><path d="M1.5 8H6M4 5.5 6.5 8 4 10.5M14.5 8H10M12 5.5 9.5 8 12 10.5"/>',
+    flush: '<rect x="2" y="3" width="5" height="5"/><rect x="9" y="3" width="5" height="9"/><path d="M1 3h14" stroke-dasharray="1.5 1.5"/>',
+    angle: '<path d="M2.5 13.5h11M2.5 13.5 11 4"/><path d="M7.5 13.5a5 5 0 0 0-1.5-3.6"/>',
+    tangent: '<circle cx="7" cy="9" r="4.5"/><path d="M1 4.5h14"/>',
+    offset: '<path d="M2 3h12M2 13h12M8 5v6M6.3 6.7 8 5l1.7 1.7M6.3 9.3 8 11l1.7-1.7"/>',
+    group: '<rect x="2" y="2" width="5.5" height="5.5"/><rect x="8.5" y="8.5" width="5.5" height="5.5"/><path d="M7.5 5h3v3.5M8.5 11h-3V7.5"/>',
+    link: '<path d="M6.5 9.5 9.5 6.5"/><path d="M7 4.5 8.5 3a2.5 2.5 0 0 1 3.5 3.5L10.5 8M9 11.5 7.5 13A2.5 2.5 0 0 1 4 9.5L5.5 8"/>',
+    relationship: '<rect x="2" y="4" width="7" height="7"/><rect x="7" y="5" width="7" height="7"/>',
+  };
+  // A row's tag: its type ("Revolute", "Mate + Flush", ...) with an icon, in its kind's colour.
+  function typeTag(r) {
+    var label = String(r.type || KIND_LABEL[r.kind] || '').replace(/^As-built\s+/i, '');
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+    var key = r.kind === 'rigidGroup' ? 'group' : r.kind === 'motionLink' ? 'link'
+      : label.toLowerCase().split(/[\s+]+/)[0];
+    var icon = TYPE_ICON[key] || TYPE_ICON[r.kind === 'constraint' ? 'relationship' : 'joint'];
+    return '<span class="kind ' + r.kind + '" title="' + esc(KIND_NAME[r.kind] + ' \u00b7 ' + (r.type || '')) + '">' +
+      '<svg viewBox="0 0 16 16">' + icon + '</svg>' + esc(label) + '</span>';
+  }
+  var NO_BUSY = ['partThumbs', 'highlight', 'selectPart', 'zoom', 'edit', 'ready', 'follow', 'mateView', 'clearMates',
                  'selectParts', 'featSelect', 'featEdit'];   // no state comes back for these
   var ICON = {
     zoom: '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5M5 7h4M7 5v4"/></svg>',
@@ -43,6 +76,12 @@
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
+  }
+
+  // A part's picture (thumbs.js), or `fallback` while there isn't one.
+  function partThumb(path, fallback) {
+    var p = path && state.parts[path];
+    return p && window.BPThumbs ? BPThumbs.html(p.componentId, path, fallback || '') : (fallback || '');
   }
 
   function partName(path) {
@@ -142,7 +181,7 @@
   // One joint / relationship row.
   function recRow(r, opts) {
     opts = opts || {};
-    var sub = [r.type];
+    var sub = [KIND_NAME[r.kind] || r.type];
     if (opts.showParts) sub.push(r.parts.map(partName).join(' ↔ ') || 'Ground');
     if (r.context) sub.push('in ' + partName(r.context));
     if (r.locked) sub.push('locked');
@@ -150,7 +189,7 @@
     var html = '<div class="rec' + (r.suppressed ? ' suppressed' : '') + (r.id === activeRec ? ' active' : '') +
       '" data-id="' + esc(r.id) + '">' +
       '<span class="dot ' + r.health + '" title="' + (r.health === 'ok' ? 'Healthy' : r.health) + '"></span>' +
-      '<span class="kind ' + r.kind + '">' + KIND_LABEL[r.kind] + '</span>' +
+      typeTag(r) +
       '<div class="rec-main"><div class="rec-name" title="Double-click (or F2) to rename">' + esc(r.name) + '</div>' +
         '<div class="rec-sub">' + esc(sub.join(' · ')) + '</div>' +
         (r.message ? '<div class="rec-msg ' + r.health + '">' + esc(r.message) + '</div>' : '') + '</div>' +
@@ -191,28 +230,65 @@
     $('partView').classList.toggle('hidden', !f);
     if (!f) return;
     $('partName').textContent = f.name;
-    $('partComponent').textContent = f.component + (f.path.indexOf('+') >= 0 ? ' · ' + f.path : '');
+    $('partThumb').innerHTML = partThumb(f.path);
+    $('partComponent').textContent = f.paths
+      ? f.paths.length + ' copies \u00b7 their relationships together'
+      : f.component + (f.path.indexOf('+') >= 0 ? ' · ' + f.path : '');
     $('partGrounded').classList.toggle('hidden', !f.grounded);
     var html = '';
-    if (!f.direct.length && !f.inherited.length) {
+    var internal = f.internal || [];
+    if (!f.direct.length && !f.inherited.length && !internal.length) {
       html = '<div class="empty-state"><p>Nothing holds this part.</p><p class="sub">' +
         (f.grounded ? 'It is grounded.' : 'It isn\'t grounded either, so it can be dragged freely.') + '</p></div>';
     }
-    f.direct.forEach(function (g) {
-      html += group(g[0], g[1], true);
+    bySubassembly(f.direct).forEach(function (g) {
+      html += group(g.path, g.ids, true, '', g.members);
     });
     if (f.inherited.length) {
       html += '<div class="section-label">Held through a parent assembly</div>';
-      f.inherited.forEach(function (g) { html += group(g[0], g[1], true, 'via '); });
+      bySubassembly(f.inherited).forEach(function (g) { html += group(g.path, g.ids, true, 'via ', g.members); });
+    }
+    if (internal.length) {
+      // An assembly: relationships between its own parts (each row names the two parts).
+      html += '<div class="section-label">Inside this assembly (' + internal.length + ')</div>' +
+        '<div class="group">' + recList(internal, { showParts: true }) + '</div>';
     }
     $('partGroups').innerHTML = html;
   }
 
-  function group(path, ids, linkable, prefix) {
-    return '<div class="group"><div class="group-head">' +
+  // The subassembly a part is counted in as one piece (the outermost assembly marked "as one",
+  // as in the BOM), or the part itself.
+  function subassemblyOf(path) {
+    if (!path) return path;
+    var bits = path.split('+');
+    for (var i = 1; i < bits.length; i++) {
+      var anc = bits.slice(0, i).join('+');
+      if (state.parts[anc] && state.parts[anc].asOne) return anc;
+    }
+    return path;
+  }
+
+  // [[part, ids]] -> one card per subassembly: {path, ids (no repeats), members (its parts here)}.
+  function bySubassembly(groups) {
+    var out = [], at = {};
+    groups.forEach(function (g) {
+      var key = subassemblyOf(g[0]);
+      if (!(key in at)) { at[key] = out.length; out.push({ path: key, ids: [], members: [] }); }
+      var card = out[at[key]];
+      card.members.push(g[0]);
+      g[1].forEach(function (id) { if (card.ids.indexOf(id) < 0) card.ids.push(id); });
+    });
+    return out;
+  }
+
+  function group(path, ids, linkable, prefix, members) {
+    // A subassembly's card lists relationships to any of its parts: each row names the parts.
+    var merged = members && (members.length > 1 || members[0] !== path);
+    var sub = merged ? '<span class="group-sub">' + members.length + ' of its parts</span>' : '';
+    return '<div class="group"><div class="group-head">' + partThumb(path) +
       '<span class="name' + (linkable && path ? ' link' : '') + '" data-focus="' + esc(path) + '" title="' +
-        (path ? 'Show what holds ' + esc(partName(path)) : '') + '">' + esc((prefix || '') + partName(path)) + '</span>' +
-      '<span class="count">' + ids.length + '</span></div>' + recList(ids) + '</div>';
+        (path ? 'Show what holds ' + esc(partName(path)) : '') + '">' + esc((prefix || '') + partName(path)) + sub + '</span>' +
+      '<span class="count">' + ids.length + '</span></div>' + recList(ids, merged ? { showParts: true } : null) + '</div>';
   }
 
   var TYPES = [];
@@ -258,7 +334,11 @@
       (groups[key] = groups[key] || []).push(r);
     });
     $('allList').innerHTML = Object.keys(groups).sort().map(function (key) {
-      return '<div class="group-title">' + esc(key) + ' (' + groups[key].length + ')</div><div class="list-box">' +
+      // By part pair: both parts' pictures before the names.
+      var pics = by === 'pair' ? groups[key][0].parts.slice().sort(function (a, b) {
+        return partName(a) < partName(b) ? -1 : 1;
+      }).map(function (p) { return partThumb(p); }).join('') : '';
+      return '<div class="group-title' + (pics ? ' with-pics' : '') + '">' + pics + '<span>' + esc(key) + ' (' + groups[key].length + ')</span></div><div class="list-box">' +
         groups[key].map(function (r) { return recRow(r, { showParts: by !== 'pair' }); }).join('') + '</div>';
     }).join('');
   }
@@ -364,10 +444,15 @@
     if (row) send('featSelect', { ids: [row.getAttribute('data-feat')] });
   });
   $('btnRefresh').addEventListener('click', function () { send('refresh'); });
+  $('btnReloadAddin').addEventListener('click', function () { send('reloadAddin'); });
   $('btnRollEnd').addEventListener('click', function () { send('rollEnd'); });
   $('follow').addEventListener('change', function (e) { send('follow', { on: e.target.checked }); });
   $('btnPartZoom').addEventListener('click', function () { if (state.focus) send('zoom', { path: state.focus.path }); });
-  $('btnPartSelect').addEventListener('click', function () { if (state.focus) send('selectPart', { path: state.focus.path }); });
+  $('btnPartSelect').addEventListener('click', function () {
+    if (!state.focus) return;
+    if (state.focus.paths) send('selectParts', { paths: state.focus.paths });
+    else send('selectPart', { path: state.focus.path });
+  });
   ['search', 'fKind', 'fType', 'fStatus', 'fGroup'].forEach(function (id) {
     $(id).addEventListener(id === 'search' ? 'input' : 'change', function () { if (state) renderAll(); });
   });
@@ -378,6 +463,9 @@
   var view = null;            // svg viewBox {x, y, w, h}
   var mapKey = '';            // what the current layout is for
 
+  // The map's node for the Part tab's part (a part inside an assembly is drawn as the assembly).
+  function mapFocus() { return state.focus ? (state.graph.focusNode || state.focus.path) : null; }
+
   function mapData() {
     var g = state.graph;
     var scope = $('mapScope').value;
@@ -386,7 +474,7 @@
       return g;
     }
     // Two steps out from the focused part.
-    var keep = {}; keep[state.focus.path] = true;
+    var keep = {}; keep[mapFocus()] = true;
     for (var depth = 0; depth < 2; depth++) {
       var add = {};
       g.edges.forEach(function (e) {
@@ -411,7 +499,7 @@
         pos[node.id] = { x: Math.cos(a) * 100 + Math.random(), y: Math.sin(a) * 100 + Math.random() };
       }
     });
-    if (state.focus && pos[state.focus.path] && fresh) pos[state.focus.path] = { x: 0, y: 0 };
+    if (state.focus && pos[mapFocus()] && fresh) pos[mapFocus()] = { x: 0, y: 0 };
     var P = nodes.map(function (node) { return pos[node.id]; });
     var ideal = 70, iterations = n > 150 ? 150 : 300;
     for (var it = 0; it < iterations; it++) {
@@ -454,14 +542,14 @@
     $('mapEmpty').classList.toggle('hidden', !!data);
     svg.classList.toggle('hidden', !data);
     if (!data) return;
-    var key = $('mapScope').value + '|' + (state.focus ? state.focus.path : '') + '|' +
+    var key = $('mapScope').value + '|' + (mapFocus() || '') + '|' +
       data.nodes.map(function (n) { return n.id; }).join(',') + '|' + data.edges.length;
     if (relayout || key !== mapKey) {
       layout(data, relayout || key.split('|').slice(0, 2).join('|') !== mapKey.split('|').slice(0, 2).join('|'));
       fit(data);
       mapKey = key;
     }
-    var focus = state.focus && state.focus.path;
+    var focus = mapFocus();
     var near = {};
     if (focus) {
       near[focus] = true;
@@ -482,14 +570,21 @@
       var p = pos[n.id];
       var cls = 'node' + (n.grounded ? ' grounded' : '') + (n.floating ? ' floating' : '') + (n.id === '' ? ' ground' : '') +
         (n.id === focus ? ' focus' : '') + (focus && !near[n.id] ? ' dim' : '');
-      var r = 6 + Math.min(n.degree, 8);
+      // Parts show their picture (thumbs.js) in a round frame; it fills in when it arrives.
+      var info = n.id && state.parts[n.id];
+      var pic = info && window.BPThumbs ? BPThumbs.url(info.componentId, n.id) : '';
+      var r = info ? 13 + Math.min(n.degree, 8) / 2 : 6 + Math.min(n.degree, 8);
       var label = n.name.length > 22 ? n.name.slice(0, 21) + '…' : n.name;
-      return '<g class="' + cls + '" data-node="' + esc(n.id) + '" transform="translate(' + p.x + ',' + p.y + ')">' +
-        '<circle r="' + r + '"><title>' + esc(n.name + (n.id ? '\n' + n.id : '')) + '</title></circle>' +
+      var img = info ? '<image data-pt="' + esc(info.componentId) + '"' + (pic ? ' href="' + pic + '"' : '') +
+        ' x="' + (-r + 2) + '" y="' + (-r + 2) + '" width="' + (2 * r - 4) + '" height="' + (2 * r - 4) + '"' +
+        ' clip-path="url(#mapPicClip)" preserveAspectRatio="xMidYMid meet"/>' : '';
+      return '<g class="' + cls + (pic ? ' pic' : '') + '" data-node="' + esc(n.id) + '" transform="translate(' + p.x + ',' + p.y + ')">' +
+        '<circle r="' + r + '"><title>' + esc(n.name + (n.id ? '\n' + n.id : '')) + '</title></circle>' + img +
         '<text x="' + (r + 3) + '" y="3">' + esc(label) + '</text></g>';
     }).join('');
     svg.setAttribute('viewBox', [view.x, view.y, view.w, view.h].join(' '));
-    svg.innerHTML = '<g>' + edgeHtml + '</g><g>' + nodeHtml + '</g>';
+    svg.innerHTML = '<defs><clipPath id="mapPicClip" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs>' +
+      '<g>' + edgeHtml + '</g><g>' + nodeHtml + '</g>';
   }
 
   // Map interaction: click a part / line, drag a part, drag to pan, wheel to zoom.
@@ -572,6 +667,8 @@
     onTab: function (fn) { tabHooks.push(fn); },
     // Open a part on the Part tab ("what holds it") and select it in Fusion.
     focusPart: function (path) { send('focus', { path: path, select: true }); showTab('part'); },
+    // The Part tab for every copy of one part (a group row): their relationships together.
+    focusParts: function (paths) { send('focus', { paths: paths, select: true }); showTab('part'); },
     // While typing in an inline editor, hold back redraws (they'd wipe the input); end with editing(false).
     editing: function (on) {
       renaming = !!on;
@@ -584,7 +681,8 @@
   window.fusionJavaScriptHandler = {
     handle: function (action, data) {
       try {
-        if (action === 'state') { state = JSON.parse(data); render(); }
+        if (action === 'state') { state = JSON.parse(data); if (window.BPThumbs) BPThumbs.gen(state.partsGen); render(); }
+        else if (action === 'partThumbs') { if (window.BPThumbs) BPThumbs.got(JSON.parse(data)); }
       } catch (e) {
         doneBusy();
         $('error').textContent = e.message;
@@ -602,14 +700,18 @@
   }
   $('mateGhost').addEventListener('change', mateView);
   $('mateIsolate').addEventListener('change', mateView);
-  $('btnMateClear').addEventListener('click', function () { send('clearMates'); });
+  $('btnMateClear').addEventListener('click', function () {
+    activeRec = null;                       // no row stays highlighted
+    Array.prototype.forEach.call(document.querySelectorAll('.rec.active'), function (el) { el.classList.remove('active'); });
+    send('clearMates');
+  });
 
   function boot() { showTab(recall('tab') || 'tree'); }
   window.addEventListener('load', boot);   // after tree.js / bom.js have registered
   (function ready(tries) {
     if (window.adsk && window.adsk.fusionSendData) {
       send('ready');
-      send('mateView', { ghost: recall('mateGhost') !== '0', isolate: recall('mateIsolate') === '1' });
+      send('mateView', { ghost: true, isolate: recall('mateIsolate') === '1' });   // see-through always starts on
     }
     else if (tries < 50) setTimeout(function () { ready(tries + 1); }, 100);
   })(0);
