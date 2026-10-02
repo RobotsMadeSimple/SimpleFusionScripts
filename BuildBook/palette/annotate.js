@@ -20,7 +20,7 @@
                    bold: ['text'], box: ['text'], leader: ['text'] };
   var TOOL_TYPE = { arrow: 'arrow', line: 'line', rect: 'rect', ellipse: 'ellipse', text: 'text', callout: 'callout' };
   var HINTS = {
-    select: 'Click to select (Shift = add), drag empty space to box-select, drag handles to reshape, double-click text / balloon to edit. Del removes, Ctrl+Z undoes.',
+    select: 'Click to select (Shift = add), drag empty space to box-select, drag handles to reshape, double-click text / balloon to edit. Moving text keeps its leader tip in place (Alt moves it too). Del removes, Ctrl+Z undoes.',
     arrow: 'Drag to draw an arrow (Shift = 45 degree steps).',
     line: 'Drag to draw a line (Shift = 45 degree steps).',
     rect: 'Drag to draw a rectangle (Shift = square).',
@@ -240,10 +240,20 @@
     if (minx > maxx) return [0, 0];
     return [clamp(dx, -minx, 1 - maxx), clamp(dy, -miny, 1 - maxy)];
   }
-  function shift(a, dx, dy) {
+  function shift(a, dx, dy, keepTip) {
     a.x1 += dx; a.y1 += dy;
+    if (keepTip) return;
     if (isNum(a.x2)) a.x2 += dx;
     if (isNum(a.y2)) a.y2 += dy;
+  }
+  // Moving text / a callout with a leader keeps the leader's tip where it points (only the text
+  // or bubble moves; Alt moves the tip too). Clamp on what actually moves.
+  function clampMoving(list, dx, dy, alt) {
+    var moving = list.map(function (o) {
+      var a = o.a || o, pin = !alt && (o.lead !== undefined ? o.lead : hasLeader(a));
+      return pin ? { x1: o.x1 !== undefined ? o.x1 : a.x1, y1: o.y1 !== undefined ? o.y1 : a.y1 } : o;
+    });
+    return clampDelta(moving, dx, dy);
   }
 
   function select(list) { sel = list; syncStyle(); updateButtons(); render(); }
@@ -452,7 +462,7 @@
       var collapse = null;
       if (sel.indexOf(a) < 0) select([a]); else if (sel.length > 1) collapse = a;
       drag = { mode: 'move', p0: p, moved: false, collapse: collapse,
-               origs: sel.map(function (x) { return { a: x, x1: x.x1, y1: x.y1, x2: x.x2, y2: x.y2 }; }) };
+               origs: sel.map(function (x) { return { a: x, x1: x.x1, y1: x.y1, x2: x.x2, y2: x.y2, lead: hasLeader(x) }; }) };
     } else {
       var keep = e.shiftKey ? sel.slice() : [];
       if (!e.shiftKey && sel.length) select([]);
@@ -481,13 +491,15 @@
       else { drag.temp.x2 = qx; drag.temp.y2 = qy; }
       render();
     } else if (drag.mode === 'move') {
-      var d = clampDelta(drag.origs.map(function (o) { return o; }), (p.x - drag.p0.x) / dw, (p.y - drag.p0.y) / dh);
+      var alt = e.altKey;
+      var d = clampMoving(drag.origs, (p.x - drag.p0.x) / dw, (p.y - drag.p0.y) / dh, alt);
       if (!drag.moved && Math.hypot(p.x - drag.p0.x, p.y - drag.p0.y) < 3) return;
       drag.moved = true;
       drag.origs.forEach(function (o) {
         o.a.x1 = o.x1 + d[0]; o.a.y1 = o.y1 + d[1];
-        if (isNum(o.x2)) o.a.x2 = o.x2 + d[0];
-        if (isNum(o.y2)) o.a.y2 = o.y2 + d[1];
+        var pin = o.lead && !alt;               // a leader's tip stays put (Alt: it moves too)
+        if (isNum(o.x2)) o.a.x2 = pin ? o.x2 : o.x2 + d[0];
+        if (isNum(o.y2)) o.a.y2 = pin ? o.y2 : o.y2 + d[1];
       });
       render();
     } else if (drag.mode === 'handle') {
@@ -738,8 +750,8 @@
       var step = (e.shiftKey ? 10 : 1), dx = 0, dy = 0;
       if (k === 'ArrowLeft') dx = -step / dw; else if (k === 'ArrowRight') dx = step / dw;
       else if (k === 'ArrowUp') dy = -step / dh; else dy = step / dh;
-      var d = clampDelta(sel, dx, dy);
-      sel.forEach(function (a) { shift(a, d[0], d[1]); });
+      var d = clampMoving(sel, dx, dy, e.altKey);
+      sel.forEach(function (a) { shift(a, d[0], d[1], !e.altKey && hasLeader(a)); });
       commit('nudge'); render();
     } else if (!e.altKey && !ctrl && 'valretc'.indexOf(lower) >= 0 && lower.length === 1) {
       setTool({ v: 'select', a: 'arrow', l: 'line', r: 'rect', e: 'ellipse', t: 'text', c: 'callout' }[lower]);

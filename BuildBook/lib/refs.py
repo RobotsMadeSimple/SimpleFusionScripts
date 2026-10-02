@@ -314,18 +314,84 @@ def bom_line(occ, ref_name, short=True):
 
 
 def unassigned(manual, index):
-    """Leaf occurrences not covered by any step item (self or ancestor), sorted by name."""
+    """Parts not covered by any step item (self or ancestor), as a tree in display order:
+    [{"path", "name", "component", "depth", "group"?, "leaves"?, "total"?}]. An assembly (or a
+    split component) is a "group" row, followed by its parts not yet in a step; it can be added
+    whole, or its parts one by one. "leaves" = its parts not in a step, "total" = all its parts."""
     covered = model.covered_paths(manual)
     short = manual["settings"].get("shortHardwareNames", True)
+    kids = {}
+    for path in index:
+        kids.setdefault(path.rpartition(model.PATH_SEP)[0], []).append(path)   # body paths: "occ+#body"
+    names = {}
+
+    def name(path):
+        if path not in names:
+            part = index[path]
+            names[path] = display_name(part, part.name, short)
+        return names[path]
+
+    def ordered(paths):
+        return sorted(paths, key=lambda p: (hardware.natural_key(name(p)), p))
+
+    totals = {}
+
+    def total(path):
+        if path not in totals:
+            ch = kids.get(path)
+            totals[path] = sum(total(c) for c in ch) if ch else 1
+        return totals[path]
+
     out = []
-    for path, occ in index.items():
-        if occ.childOccurrences.count or is_split(occ):
-            continue
+
+    def visit(path, depth):
         if model.is_covered(covered, path):
-            continue
-        out.append({"path": path, "name": display_name(occ, occ.name, short), "component": occ.component.name})
-    out.sort(key=lambda p: (hardware.natural_key(p["name"]), p["path"]))
+            return 0
+        part = index[path]
+        node = {"path": path, "name": name(path), "component": part.component.name, "depth": depth}
+        ch = kids.get(path)
+        out.append(node)
+        if not ch:
+            return 1
+        at = len(out)
+        left = sum(visit(c, depth + 1) for c in ordered(ch))
+        if not left:                 # every part of it is in a step already
+            del out[at - 1:]
+            return 0
+        node.update({"group": True, "split": is_split(part), "leaves": left, "total": total(path)})
+        return left
+
+    for top in ordered(kids.get("", [])):
+        visit(top, 0)
     return out
+
+
+PICK_WHOLE, PICK_SUB, PICK_PART = "Whole assembly", "Sub-assembly", "Single part"
+PICK_LEVELS = (PICK_WHOLE, PICK_SUB, PICK_PART)
+PICK_TIP = ("What a click picks. Whole assembly: the top-level assembly the part is in (or the step part "
+            "holding it). Sub-assembly: the assembly directly around the part. Single part: just the part.")
+
+
+def pick_unit(occ, level, known=()):
+    """What a click on occurrence `occ` picks at a pick level (PICK_*).
+    Single part: occ itself. Sub-assembly: its parent assembly (occ itself at the top level).
+    Whole assembly: the innermost of `known` (paths already in the step or picked) holding it,
+    else its top-level assembly. Split components' bodies are handled before this."""
+    if occ is None or level == PICK_PART or isinstance(occ, BodyPart):
+        return occ
+    path = occ.fullPathName
+    if level == PICK_SUB:
+        target = path.rpartition(model.PATH_SEP)[0] or path
+    else:
+        owners = [k for k in known if k and BODY_MARK not in k and model.is_self_or_ancestor(k, path)]
+        target = max(owners, key=len) if owners else path.split(model.PATH_SEP)[0]
+    unit = occ
+    try:
+        while unit is not None and unit.fullPathName != target:
+            unit = unit.assemblyContext
+    except Exception:
+        unit = None
+    return unit or occ
 
 
 def selected_occurrences(ui):

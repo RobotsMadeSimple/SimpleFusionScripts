@@ -16,7 +16,9 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from ..lib import log, model, refs
+from ..lib import log, model, refs, scene
+
+HIGHLIGHT_GROUP_ID = "BuildBookPickHighlight"
 
 CMD_ID = "buildBookPick"
 CMD_NAME = "Pick Parts"
@@ -26,8 +28,6 @@ CMD_TIP = "Pick the parts for the current BuildBook step: left-click selects, ho
 # that ended this recently still counts.
 HOVER_GRACE_S = 0.35
 
-LEVEL_PART = "Part"
-LEVEL_TOP = "Top-level subassembly"
 
 
 def _bodies_under(occ, visible_only=True):
@@ -42,7 +42,7 @@ class PickCommand:
     def __init__(self, ctrl):
         self.ctrl = ctrl
         self.step_id = None
-        self.level = LEVEL_PART
+        self.step_paths = set()     # the step's parts when the command opened
         self._handlers = []
         self._reset_session()
 
@@ -53,6 +53,8 @@ class PickCommand:
         self.hover_ended = None  # perf_counter time preselection ended, or None
         self.inputs = None
         self.command = None
+        self.syncing = False     # sync_box is refilling the Parts box: ignore its selection events
+        self.hover_warned = False
 
     # ------------------------------------------------------------ wiring
 
@@ -75,6 +77,14 @@ class PickCommand:
 
     # ------------------------------------------------------------ picking logic
 
+    @property
+    def level(self):
+        return getattr(self.ctrl, "pick_level", refs.PICK_WHOLE)
+
+    @level.setter
+    def level(self, value):
+        self.ctrl.pick_level = value
+
     def occ_for_body(self, body):
         """The occurrence a click on `body` stands for at the current level."""
         occ = body.assemblyContext
@@ -82,23 +92,126 @@ class PickCommand:
             return None  # root-component body: not a part we can track
         if refs.is_split(occ):
             return refs.BodyPart(occ, body)     # a split component: each body is a part (at any level)
-        if self.level == LEVEL_TOP:
-            top = occ.fullPathName.split(model.PATH_SEP)[0]
-            return refs.path_index(self.ctrl.design()).get(top, occ)
-        return occ
+        # No "known" parts here: this command decides the step's parts, so a whole-assembly click
+        # always means the top-level assembly, even if some of its parts are in the step already.
+        return refs.pick_unit(occ, self.level)
 
-    def pick(self, body, additional):
-        occ = self.occ_for_body(body)
+    def _target(self, entity, point=None):
+        """(part to pick at the current level, path of the part clicked) for a clicked body or
+        occurrence, or (None, None)."""
+        body = adsk.fusion.BRepBody.cast(entity)
+        if body is not None:
+            occ = self.occ_for_body(body)
+            if occ is None:
+                return None, None
+            clicked = occ.fullPathName if isinstance(occ, refs.BodyPart) else body.assemblyContext.fullPathName
+            return occ, clicked
+        occ = adsk.fusion.Occurrence.cast(entity)
         if occ is None:
-            return False
-        self.picked[occ.fullPathName] = occ
-        for b in _bodies_under(occ):
-            if b != body:
-                additional.add(b)
-        self.update_status()
-        return True
+            return None, None
+        split = refs.split_body_at(occ, point)
+        if split is not None:
+            return split, split.fullPathName
+        return refs.pick_unit(occ, self.level), occ.fullPathName
 
-    def unpick(self, body, additional):
+    def toggle(self, entity, point=None):
+        """A click: unpick whatever picked part covers it, else pick it at the current level (an
+        assembly replaces any of its parts picked before). The click itself isn't selected (Fusion
+        drops a click that adds bodies of several parts); sync_box puts the picked parts in the
+        Parts box instead, so Fusion highlights each whole, and draw_highlight outlines them."""
+        occ, clicked = self._target(entity, point)
+        if occ is None:
+            return
+        path = occ.fullPathName
+        covering = [p for p in self.picked
+                    if model.is_self_or_ancestor(p, clicked) or model.is_self_or_ancestor(path, p)]
+        if any(model.is_self_or_ancestor(p, clicked) for p in covering):
+            for p in covering:
+                del self.picked[p]
+            log.info("pick: clicked {} -> unpicked {}".format(clicked, ", ".join(covering)))
+        else:
+            for p in covering:
+                del self.picked[p]
+            self.picked[path] = occ
+            log.info("pick: clicked {} -> {} ({})".format(clicked, path, self.level))
+        self.sync_box()
+        self.update_status()
+        if self.command is not None:
+            self.command.doExecutePreview()     # draws the outline
+
+    def unselected(self, entity):
+        """Fusion took something out of the Parts box (a click on a highlighted part, or its
+        clear button): unpick the parts it stood for."""
+        occ, clicked = self._target(entity)
+        path = occ.fullPathName if occ is not None else None
+        drop = [p for p in self.picked if path and (p == path or model.is_self_or_ancestor(p, clicked)
+                                                     or model.is_self_or_ancestor(path, p))]
+        for p in drop:
+            del self.picked[p]
+        if drop:
+            log.info("pick: unselected -> unpicked {}".format(", ".join(drop)))
+        self.sync_box()
+        self.update_status()
+        if self.command is not None:
+            self.command.doExecutePreview()
+
+    def sync_box(self):
+        """Make the Parts box hold exactly the picked parts (whole assemblies as occurrences)."""
+        if self.inputs is None:
+            return
+        box = adsk.core.SelectionCommandInput.cast(self.inputs.itemById("parts"))
+        if box is None:
+            return
+        self.syncing = True
+        failed = 0
+        try:
+            box.clearSelection()
+            for part in self.picked.values():
+                try:
+                    if not box.addSelection(part.body if isinstance(part, refs.BodyPart) else part):
+                        failed += 1
+                except Exception:
+                    failed += 1         # hidden (H) parts can't be selected; they stay picked
+        except Exception:
+            log.error("pick sync box")
+        finally:
+            self.syncing = False
+        log.info("pick: box holds {} of {} picked{}".format(
+            box.selectionCount, len(self.picked), " ({} not selectable)".format(failed) if failed else ""))
+
+    def draw_highlight(self):
+        """Outline every picked part in selection blue (other parts in front hide it)."""
+        design = self.ctrl.design()
+        clear_highlight(design)
+        if not self.picked:
+            return
+        group = design.rootComponent.customGraphicsGroups.add()
+        group.id = HIGHLIGHT_GROUP_ID
+        drawn = 0
+        color = adsk.fusion.CustomGraphicsSolidColorEffect.create(adsk.core.Color.create(*scene.HIGHLIGHT_COLOR, 255))
+        for part in list(self.picked.values()):
+            try:
+                if isinstance(part, refs.BodyPart):
+                    bodies = [part.body] if part.body.isVisible else []
+                else:
+                    bodies = _bodies_under(part)
+                for body in bodies:
+                    native = body.nativeObject or body
+                    coords, lengths = self.ctrl.scene._edges(native)
+                    if not lengths:
+                        continue
+                    lines = group.addLines(adsk.fusion.CustomGraphicsCoordinates.create(coords), [], True, lengths)
+                    lines.transform = body.assemblyContext.transform2 if body.assemblyContext else adsk.core.Matrix3D.create()
+                    lines.isSelectable = False
+                    lines.weight = 2.5
+                    lines.depthPriority = 0     # hidden behind other parts, like the model
+                    lines.color = color
+                    drawn += 1
+            except Exception:
+                log.error("pick highlight")
+        log.info("pick: outlined {} bodies of {} picked".format(drawn, len(self.picked)))
+
+    def unpick(self, body, additional):     # (only for selections Fusion still holds)
         occ = body.assemblyContext
         if occ is None:
             return
@@ -122,16 +235,23 @@ class PickCommand:
             self.command.doExecutePreview()
 
     def hide_hovered(self):
-        body = self.hovered
+        entity = self.hovered
         ended = self.hover_ended
         self.hovered = None
-        if body is None or not body.isValid:
+        if entity is None or not entity.isValid:
             log.info("pick: H with nothing under the cursor")
             return False
         if ended is not None and time.perf_counter() - ended > HOVER_GRACE_S:
             log.info("pick: H ignored, hover ended {:.2f}s ago".format(time.perf_counter() - ended))
             return False
-        occ = self.occ_for_body(body)
+        # H hides the single part under the cursor (to dig inward), whatever the pick level.
+        body = adsk.fusion.BRepBody.cast(entity)
+        if body is not None:
+            occ = body.assemblyContext
+            if occ is not None and refs.is_split(occ):
+                occ = refs.BodyPart(occ, body)
+        else:
+            occ = adsk.fusion.Occurrence.cast(entity)
         if occ is None:
             log.info("pick: H on a root-component body, can't hide")
             return False
@@ -207,12 +327,7 @@ class PickCommand:
             occ, _ = refs.resolve(design, item["ref"], index)
             if occ is None:
                 continue
-            self.picked[occ.fullPathName] = occ
-            for b in _bodies_under(occ):
-                try:
-                    sel_input.addSelection(b)
-                except Exception:
-                    pass
+            self.picked[occ.fullPathName] = occ     # shown by draw_highlight, not Fusion's selection
 
     def apply(self):
         """Make the step's items exactly the picked set."""
@@ -225,6 +340,16 @@ class PickCommand:
         model.add_items(step, [refs.make_ref(o) for o in self.picked.values() if o.isValid])
         self.ctrl.save(manual)
         log.info("pick: {} now has {} parts".format(step["title"], len(step["items"])))
+
+
+def clear_highlight(design):
+    try:
+        groups = design.rootComponent.customGraphicsGroups
+        for i in range(groups.count - 1, -1, -1):
+            if groups.item(i).id == HIGHLIGHT_GROUP_ID:
+                groups.item(i).deleteMe()
+    except Exception:
+        log.error("clear pick highlight")
 
 
 def _fail(ctrl, where):
@@ -255,6 +380,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
                 return
 
             owner._reset_session()
+            owner.step_paths = set(model.item_paths(step))
             ctrl.scene.clear()          # full model, nothing exploded
             ctrl.app.activeViewport.refresh()
 
@@ -269,12 +395,14 @@ class _Created(adsk.core.CommandCreatedEventHandler):
 
             sel = inputs.addSelectionInput("parts", "Parts", "Click parts to pick them")
             sel.addSelectionFilter("Bodies")
+            sel.addSelectionFilter("Occurrences")     # so whole assemblies can sit in the box
             sel.setSelectionLimits(0, 0)
 
             level = inputs.addDropDownCommandInput(
-                "level", "Pick level", adsk.core.DropDownStyles.TextListDropDownStyle)
-            for name in (LEVEL_PART, LEVEL_TOP):
+                "level", "Click picks", adsk.core.DropDownStyles.TextListDropDownStyle)
+            for name in refs.PICK_LEVELS:
                 level.listItems.add(name, name == owner.level)
+            level.tooltip = refs.PICK_TIP
 
             inputs.addBoolValueInput("unhideLast", "Unhide last", False, "", False)
             inputs.addBoolValueInput("unhideAll", "Show all hidden", False, "", False)
@@ -282,7 +410,9 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             inputs.addTextBoxCommandInput("status", "", "", 2, True)
 
             owner.select_existing(sel)
+            owner.sync_box()
             owner.update_status()
+            owner.draw_highlight()
 
             for event, cls in ((cmd.select, _Select), (cmd.unselect, _Unselect),
                                (cmd.preSelect, _PreSelect), (cmd.preSelectEnd, _PreSelectEnd),
@@ -304,15 +434,10 @@ class _Select(adsk.core.SelectionEventHandler):
     def notify(self, args):
         try:
             args = adsk.core.SelectionEventArgs.cast(args)
-            body = adsk.fusion.BRepBody.cast(args.selection.entity)
-            if body is None:
+            if self.owner.syncing:
                 return
-            extra = adsk.core.ObjectCollection.create()
-            if not self.owner.pick(body, extra):
-                args.isSelectable = False
-                return
-            if extra.count:
-                args.additionalEntities = extra
+            args.isSelectable = False       # the picked parts go in the box instead (sync_box)
+            self.owner.toggle(args.selection.entity, args.selection.point)
         except Exception:
             log.error("pick select")
 
@@ -324,14 +449,10 @@ class _Unselect(adsk.core.SelectionEventHandler):
 
     def notify(self, args):
         try:
-            args = adsk.core.SelectionEventArgs.cast(args)
-            body = adsk.fusion.BRepBody.cast(args.selection.entity)
-            if body is None:
+            if self.owner.syncing:
                 return
-            extra = adsk.core.ObjectCollection.create()
-            self.owner.unpick(body, extra)
-            if extra.count:
-                args.additionalEntities = extra
+            args = adsk.core.SelectionEventArgs.cast(args)
+            self.owner.unselected(args.selection.entity)
         except Exception:
             log.error("pick unselect")
 
@@ -344,11 +465,22 @@ class _PreSelect(adsk.core.SelectionEventHandler):
     def notify(self, args):
         try:
             args = adsk.core.SelectionEventArgs.cast(args)
-            body = adsk.fusion.BRepBody.cast(args.selection.entity)
-            self.owner.hovered = body
+            entity = args.selection.entity
+            self.owner.hovered = entity
             self.owner.hover_ended = None
-            occ = self.owner.occ_for_body(body) if body else None
+            occ, clicked = self.owner._target(entity, args.selection.point)
             self.owner.update_status(occ.name if occ else None)
+            # Hover shows what a click would pick: the whole assembly (or sub-assembly), not just
+            # the part under the cursor.
+            if occ is not None and not isinstance(occ, refs.BodyPart) and occ.fullPathName != clicked:
+                extra = adsk.core.ObjectCollection.create()
+                extra.add(occ)
+                try:
+                    args.additionalEntities = extra
+                except Exception:
+                    if not self.owner.hover_warned:
+                        self.owner.hover_warned = True
+                        log.error("pick preselect: highlight the whole assembly")
         except Exception:
             log.error("pick preselect")
 
@@ -410,6 +542,7 @@ class _Preview(adsk.core.CommandEventHandler):
         try:
             args = adsk.core.CommandEventArgs.cast(args)
             self.owner.apply_hidden()
+            self.owner.draw_highlight()
             # Not a result: execute() still runs and writes the step, and the
             # rollback before it brings the hidden parts back.
             args.isValidResult = False
@@ -441,6 +574,7 @@ class _Destroy(adsk.core.CommandEventHandler):
             return      # an earlier run closing after a new one started: leave the new one's state alone
         try:
             owner.restore_hidden()
+            clear_highlight(owner.ctrl.design())
             owner.inputs = None
             owner.command = None
             owner.ctrl.show_step(owner.step_id)

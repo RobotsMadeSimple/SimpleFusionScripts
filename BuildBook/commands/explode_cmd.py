@@ -52,6 +52,7 @@ class ExplodeCommand:
         self.working = None          # the explode move being edited (a copy)
         self.pending = []            # moves finished with "Next move", saved before `working`
         self.picked = {}             # path -> occurrence, in pick order
+        self.syncing = False         # sync_box is refilling the Parts box: ignore its select events
         self.trail_touched = False   # trail checkbox changed: apply it to every part
         self.inputs = None
         self.command = None
@@ -215,6 +216,24 @@ class ExplodeCommand:
 
     # ------------------------------------------------------------ actions
 
+    def sync_box(self):
+        """Make the Parts box show exactly the picked occurrences (after a click picked an
+        assembly in place of the part clicked). The box can only be cleared and refilled."""
+        box = self._input(adsk.core.SelectionCommandInput, "parts")
+        self.syncing = True
+        try:
+            box.clearSelection()
+            for occ in self.picked.values():
+                if adsk.fusion.Occurrence.cast(occ) is not None:
+                    try:
+                        box.addSelection(occ)
+                    except Exception:
+                        pass        # moved parts are hidden at home; they stay picked
+        except Exception:
+            log.error("explode sync box")
+        finally:
+            self.syncing = False
+
     def pick_path(self, path, occ=None):
         if occ is None:
             occ = refs.path_index(self.ctrl.design()).get(path)
@@ -350,6 +369,11 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             parts.addSelectionFilter("Occurrences")
             parts.addSelectionFilter(adsk.core.SelectionCommandInput.CustomGraphics)
             parts.setSelectionLimits(0, 0)
+            level = inputs.addDropDownCommandInput(
+                "pickLevel", "Click picks", adsk.core.DropDownStyles.TextListDropDownStyle)
+            for name in refs.PICK_LEVELS:
+                level.listItems.add(name, name == getattr(ctrl, "pick_level", refs.PICK_WHOLE))
+            level.tooltip = refs.PICK_TIP
 
             axis = inputs.addDropDownCommandInput(
                 "axis", "Direction", adsk.core.DropDownStyles.TextListDropDownStyle)
@@ -459,6 +483,8 @@ class _Select(adsk.core.SelectionEventHandler):
     def notify(self, args):
         owner = self.owner
         try:
+            if owner.syncing:
+                return
             args = adsk.core.SelectionEventArgs.cast(args)
             if args.activeInput is None or args.activeInput.id != "parts":
                 return
@@ -477,7 +503,22 @@ class _Select(adsk.core.SelectionEventHandler):
                     owner.pick_path(path, split_part)
                 args.isSelectable = False       # the box can't hold a body stand-in; the preview shows it
             elif occ is not None:
-                owner.pick_path(occ.fullPathName, occ)
+                _, step = owner._step()
+                known = set(owner.picked) | (set(model.item_paths(step)) if step is not None else set())
+                unit = refs.pick_unit(occ, getattr(owner.ctrl, "pick_level", refs.PICK_WHOLE), known)
+                log.info("explode: clicked {} -> {} ({})".format(occ.fullPathName, unit.fullPathName,
+                                                                 getattr(owner.ctrl, "pick_level", refs.PICK_WHOLE)))
+                if unit.fullPathName == occ.fullPathName:
+                    owner.pick_path(occ.fullPathName, occ)
+                else:
+                    # A part inside an assembly: the whole assembly is picked (or unpicked) instead.
+                    path = unit.fullPathName
+                    if path in owner.picked:
+                        del owner.picked[path]
+                    else:
+                        owner.pick_path(path, unit)
+                    args.isSelectable = False
+                    owner.sync_box()
             else:
                 leaf = owner.ctrl.scene.pickable_path(entity)
                 if leaf is None:
@@ -502,6 +543,8 @@ class _Unselect(adsk.core.SelectionEventHandler):
     def notify(self, args):
         owner = self.owner
         try:
+            if owner.syncing:
+                return
             args = adsk.core.SelectionEventArgs.cast(args)
             occ = adsk.fusion.Occurrence.cast(args.selection.entity)
             body = adsk.fusion.BRepBody.cast(args.selection.entity)
@@ -527,6 +570,9 @@ class _InputChanged(adsk.core.InputChangedEventHandler):
             cid = changed.id
             if cid in ("nextSame", "nextNew"):
                 owner.next_move(same_parts=cid == "nextSame")
+                return
+            if cid == "pickLevel":
+                owner.ctrl.pick_level = adsk.core.DropDownCommandInput.cast(changed).selectedItem.name
                 return
             if cid == "dirEntity":
                 pick = adsk.core.SelectionCommandInput.cast(changed)

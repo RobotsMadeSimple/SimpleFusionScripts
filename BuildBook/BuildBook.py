@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import pathlib
+import re
 import tempfile
 import time
 import traceback
@@ -18,7 +19,7 @@ import adsk.core
 import adsk.fusion
 
 from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
-from .lib import capture, crop, explode, hardware, log, manual_pdf, model, pictures, refs
+from .lib import capture, crop, explode, hardware, log, manual_pdf, model, partthumbs, pictures, refs
 from .lib.overlay import CropOverlay
 from .lib import scene as scene_mod
 from .lib.scene import Scene
@@ -29,8 +30,10 @@ COMMAND_ID = "buildBookShow"
 ATTR_GROUP = "BuildBook"
 ATTR_NAME = "manual"
 FILL_EVENT = "buildBookFillLabels"     # custom event: read hardware details a batch at a time
+RELOAD_EVENT = "buildBookReload"       # custom event: reload the add-in's code (Settings > Reload BuildBook)
 
 _handlers = []
+_events = []          # (event, handler) pairs, for reload_addin
 _ctrl = None
 
 
@@ -40,6 +43,7 @@ class Controller:
         self.ui = app.userInterface
         self.scene = Scene()
         self.explode = explode_cmd.ExplodeCommand(self)
+        self.pick_level = refs.PICK_WHOLE   # part pickers: what a click picks (refs.PICK_LEVELS)
         self.picker = pick_cmd.PickCommand(self)
         self.lines = lines_cmd.LinesCommand(self)
         self.anchor = anchor_cmd.AnchorCommand(self)
@@ -67,7 +71,22 @@ class Controller:
             log.error("manual attribute unreadable; starting a new one")
             manual = model.new_manual()
         refs.set_split(manual["settings"].get("splitBodies"))     # which components are parts per body
+        if not (manual.get("title") or "").strip() or manual["title"] == "Build manual":
+            manual["title"] = self.document_title() or manual.get("title") or "Build manual"
         return manual
+
+    def document_title(self):
+        """The open design's file name without Fusion's version ("Conveyor v12" -> "Conveyor"):
+        the manual's title until you give it one of your own."""
+        try:
+            doc = self.app.activeDocument
+            name = (doc.dataFile.name if doc.dataFile else "") or doc.name
+        except Exception:
+            try:
+                name = self.app.activeDocument.name
+            except Exception:
+                return ""
+        return re.sub(r"\s+v\d+$", "", name or "").strip()
 
     def keep(self, handler):
         """Keep an event handler alive (Fusion only holds weak references)."""
@@ -215,6 +234,7 @@ class Controller:
                     "bom": item.get("bom", True) is not False,
                     "missing": path in missing_paths,
                 })
+                items[-1]["thumb"] = partthumbs.thumb_key(occ)
                 items[-1]["bomKey"], items[-1]["bomName"], items[-1]["hw"] = refs.bom_line(
                     occ, item["ref"].get("name", path), short)
             # Listed by name (numbers by value: M3x8 before M3x12); the manual keeps its own order.
@@ -240,7 +260,7 @@ class Controller:
             "currentStepId": self.scene.step_id,
             "edit": self.scene.edit,
             "step": detail,
-            "unassigned": self._timed("state: unassigned list", refs.unassigned, manual, index),
+            "unassigned": self._timed("state: unassigned list", self._unassigned_with_thumbs, manual, index),
             "missing": missing,
             "units": length_units,
             "manualDefault": shown(manual["settings"]["defaultDistance"]),
@@ -362,6 +382,16 @@ class Controller:
                 return
         elif action == "exportManual":
             self._export_manual(manual)
+        elif action == "partMeshes":
+            self._send_part_meshes(data.get("paths") or [], data.get("keys"))
+            return
+        elif action == "refreshThumbs":
+            self._refresh_thumbnails(manual)
+            return
+        elif action == "reloadAddin":
+            # Not from here: this runs inside the panel's own event, and reloading deletes the panel.
+            self.app.fireCustomEvent(RELOAD_EVENT, "")
+            return
         elif action == "exportPdf":
             self._export_pdf()
         elif action == "annotate":
@@ -381,7 +411,9 @@ class Controller:
                 # Its preview: the picture's parts at this view (it stays on screen, framed).
                 pictures.show(self, manual, data.get("kind"), data.get("id"), move_camera=False, frame=False)
                 pictures.save_thumb(self, data.get("kind"), data.get("id"))
+                self.crop_overlay.key = None
                 self.update_overlay()
+                self.app.activeViewport.refresh()
                 self.notify("View saved for {}.".format(title))
             elif action == "pictureClearView":
                 pic["camera"] = None
@@ -630,6 +662,88 @@ class Controller:
             if no_view:
                 msg += " ({} step(s) had no saved view and used the current one)".format(no_view)
             self.notify(msg)
+        self.push_state()
+
+    def _unassigned_with_thumbs(self, manual, index):
+        out = refs.unassigned(manual, index)
+        # Parts first (children follow their assembly), then each assembly's key from its listed
+        # parts' keys, so an assembly isn't walked again for every level it sits in.
+        keys = {}
+        for u in reversed(out):
+            if u.get("group"):
+                kids = [keys[k] for k in keys if k.rpartition(model.PATH_SEP)[0] == u["path"]]
+                part = index.get(u["path"])
+                base = refs.component_key(part.component) if part is not None else u["path"]
+                keys[u["path"]] = partthumbs.combine(base, kids)
+            else:
+                keys[u["path"]] = partthumbs.thumb_key(index.get(u["path"]))
+            u["thumb"] = keys[u["path"]]
+        return out
+
+    def _send_part_meshes(self, paths, keys=None):
+        """The panel asks for the meshes of parts whose pictures it doesn't have; it draws them.
+        Replies under the keys the panel used (an assembly's key on the Parts tab is made from
+        its parts' keys, not its own bodies)."""
+        index = refs.path_index(self.design())
+        out = {}
+        keys = keys or []
+        with log.timed("part meshes ({})".format(len(paths))):
+            for i, path in enumerate(paths[:40]):
+                part = index.get(path)
+                key = (keys[i] if i < len(keys) else "") or partthumbs.thumb_key(part)
+                if key and key not in out:
+                    mesh = partthumbs.mesh_for(part)
+                    if mesh is not None:
+                        out[key] = mesh
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        if palette is not None:
+            palette.sendInfoToHTML("partMeshes", json.dumps(out))
+
+    def _refresh_thumbnails(self, manual):
+        """Take every step's thumbnail again at its saved view (and the cover's / sections'): they're
+        kept per computer, so a new one starts without them. The view is put back afterwards."""
+        steps = [st for _, st in model.ordered_steps(manual) if st.get("camera")]
+        pics = ([("cover", None)] if manual.get("cover", {}).get("camera") else []) + \
+               [("section", s["id"]) for s in manual["sections"] if s.get("image", {}).get("camera")]
+        total = len(steps) + len(pics)
+        if not total:
+            self.notify("No saved views yet: save a step's view (View & image > Save view) first.")
+            self.push_state()
+            return
+        return_to = self.scene.step_id
+        camera = capture.camera_to_dict(self.app.activeViewport.camera)
+        progress = self.ui.createProgressDialog()
+        progress.isCancelButtonShown = True
+        progress.show("BuildBook", "Taking thumbnail %v of %m...", 0, total, 0)
+        done = 0
+        try:
+            for step in steps:
+                if progress.wasCancelled:
+                    break
+                self.show_step(step["id"], move_camera=True, smooth=False)
+                capture.save_thumbnail(self, step["id"])
+                done += 1
+                progress.progressValue = done
+            for kind, pid in pics:
+                if progress.wasCancelled:
+                    break
+                pictures.show(self, manual, kind, pid, frame=False)
+                pictures.save_thumb(self, kind, pid)
+                done += 1
+                progress.progressValue = done
+        except Exception:
+            log.error("refresh thumbnails")
+        finally:
+            progress.hide()
+            if return_to:
+                self.show_step(return_to)
+            else:
+                self.close_view()
+            capture.apply_camera(self.app.activeViewport, camera, smooth=False)
+        skipped = len([st for _, st in model.ordered_steps(manual) if not st.get("camera")])
+        self.notify("Refreshed {} thumbnail{}{}.".format(done, "" if done == 1 else "s",
+                    " ({} step{} without a saved view skipped)".format(skipped, "" if skipped == 1 else "s")
+                    if skipped else ""))
         self.push_state()
 
     def _compose(self, path, annotations):
@@ -1047,14 +1161,16 @@ class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
         try:
             ui = _ctrl.ui
             palette = ui.palettes.itemById(PALETTE_ID)
-            if not palette:
+            new = not palette
+            if new:
                 palette = ui.palettes.add(PALETTE_ID, PALETTE_NAME, _palette_url(), True, True, True, 420, 700)
-                palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
                 handler = PaletteHTMLHandler()
                 palette.incomingFromHTML.add(handler)
                 _handlers.append(handler)
                 _add(palette.closed, PaletteClosedHandler())
             palette.isVisible = True
+            if new:
+                _place_palette(ui, palette)
             _ctrl.push_state()          # (nothing is pushed while it's hidden)
         except Exception:
             log.error("show palette")
@@ -1066,8 +1182,8 @@ class CameraChangedHandler(adsk.core.CameraEventHandler):
 
     def notify(self, args):
         # Fires continuously while orbiting: do nothing unless the frame is showing.
-        if _ctrl is None or _ctrl.frame_ratio is None or not _ctrl.scene.active:
-            return
+        if _ctrl is None or _ctrl.frame_ratio is None or not (_ctrl.scene.active or _ctrl.picture_view):
+            return                  # (a section / cover picture on screen counts: its frame follows too)
         try:
             _ctrl.move_frame()
         except Exception:
@@ -1102,6 +1218,45 @@ class DocSavedHandler(adsk.core.DocumentEventHandler):
             log.error("documentSaved")
 
 
+def reload_addin():
+    """Stop, reload every module of the add-in from disk, start again and reopen the panel: picks
+    up new code (an update, an edit) without Fusion's Scripts and Add-Ins dialog."""
+    import importlib
+    import sys
+    app = adsk.core.Application.get()
+    ui = app.userInterface
+    try:
+        log.info("reloading BuildBook")
+        stop(None)
+        _detach_events()
+        package = log.__name__.rpartition(".lib.")[0]      # however Fusion named the add-in's package
+        # Submodules first (reloaded in place, so "from . import x" references stay good), then
+        # this module, whose "from .lib.x import Name" lines pick up the new classes.
+        for name in sorted(n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__):
+            module = sys.modules.get(name)
+            if module is not None:
+                importlib.reload(module)
+        # Fusion loads this file under a made-up module name importlib.reload can't find, so run the
+        # file's new code into the same module object instead (its globals become the new ones).
+        import importlib.machinery
+        main = sys.modules[__name__]
+        importlib.machinery.SourceFileLoader(__name__, __file__).exec_module(main)
+        main.run(None)
+        cmd = ui.commandDefinitions.itemById(COMMAND_ID)
+        if cmd is not None:
+            cmd.execute()                       # reopen the panel
+        main.log.info("BuildBook reloaded")
+    except Exception:
+        log.error("reload")
+        ui.messageBox("BuildBook couldn't reload:\n{}\n\nUse Utilities > Scripts and Add-Ins to stop and run it.".format(
+            traceback.format_exc()))
+
+
+class ReloadHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        reload_addin()
+
+
 class FillLabelsHandler(adsk.core.CustomEventHandler):
     def notify(self, args):
         try:
@@ -1126,13 +1281,76 @@ class DocDeactivatingHandler(adsk.core.DocumentEventHandler):
             log.error("documentDeactivating")
 
 
+def _place_palette(ui, palette):
+    """Start the panel under Fusion's browser: snapped below it when Fusion lists the browser
+    among its palettes, else docked left (where a pinned browser sits, so it stacks under it).
+    Only on the panel's first showing; after that it stays wherever the user moves it."""
+    ours = ("browserplus", "buildbook", "holethreadcallouts", "stockscout")
+    try:
+        ids = [ui.palettes.item(i).id for i in range(ui.palettes.count)]
+        log.info("palettes: " + ", ".join(ids))
+        browser = next((ui.palettes.itemById(i) for i in ids
+                        if "browser" in i.lower() and not i.lower().startswith(ours)), None)
+        if browser is not None and browser.isVisible:
+            palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+            if palette.snapTo(browser, adsk.core.PaletteSnapOptions.PaletteSnapOptionsBottom):
+                log.info("panel snapped under " + browser.id)
+                return
+    except Exception:
+        log.error("place panel under the browser")
+    palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateLeft
+    log.info("panel docked left")
+
+
 def _add(event, handler):
     event.add(handler)
     _handlers.append(handler)
+    _events.append((event, handler))      # detached again by reload_addin
+
+
+def _detach_events():
+    """Take this run's handlers off Fusion's events (a reload starts fresh ones)."""
+    for event, handler in _events:
+        try:
+            event.remove(handler)
+        except Exception:
+            pass
+    del _events[:]
+    del _handlers[:]
+
+
+# Fusion can load the same add-in twice (e.g. from the AddIns folder and from a path added in
+# Scripts and Add-Ins). Two copies both answer the same buttons, so only the first one runs.
+_SINGLE_KEY = "_rms_buildbook_module"
+
+
+def _claim():
+    """True if this copy may run (no other copy of the add-in is running)."""
+    import sys
+    other = getattr(sys, _SINGLE_KEY, None)
+    if other and other != __name__ and other in sys.modules:
+        log.info("another copy of this add-in is already running ({}); this one ({}) stays off".format(
+            other, os.path.dirname(os.path.abspath(__file__))))
+        return False
+    setattr(sys, _SINGLE_KEY, __name__)
+    return True
+
+
+def _mine():
+    import sys
+    return getattr(sys, _SINGLE_KEY, None) == __name__
+
+
+def _release():
+    import sys
+    if _mine():
+        delattr(sys, _SINGLE_KEY)
 
 
 def run(context):
     global _ctrl
+    if not _claim():
+        return
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:
@@ -1167,6 +1385,11 @@ def run(context):
         except Exception:
             pass
         _add(app.registerCustomEvent(FILL_EVENT), FillLabelsHandler())
+        try:
+            app.unregisterCustomEvent(RELOAD_EVENT)
+        except Exception:
+            pass
+        _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
         _add(app.documentOpened, DocSwitchHandler())
         _add(app.documentDeactivating, DocDeactivatingHandler())
     except Exception:
@@ -1175,6 +1398,9 @@ def run(context):
 
 
 def stop(context):
+    if not _mine():
+        return
+    _release()                  # (a reload claims it again in run)
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:

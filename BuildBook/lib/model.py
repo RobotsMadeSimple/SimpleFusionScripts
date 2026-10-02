@@ -91,7 +91,7 @@ def default_settings():
             "height": 1200,
             "transparent": False,
             "visualStyle": "shadedWithVisibleEdges",
-            "ratio": "viewport",       # exported area: centred crop of this ratio (lib/crop.py RATIOS)
+            "ratio": "4:3",            # exported area: centred crop of this ratio (lib/crop.py RATIOS)
         },
     }
 

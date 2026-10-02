@@ -71,9 +71,11 @@ def show(ctrl, manual, kind, pid, move_camera=True, frame=True):
     if kind != "step":
         ctrl.picture_view = True        # (after close_view / show_step, which reset it)
     if frame:
+        ctrl.crop_overlay.key = None        # draw it again for this camera, not "already drawn"
         ctrl.update_overlay()
     else:
         ctrl.crop_overlay.clear()
+    viewport.refresh()                      # the frame is edited in place: show it now
     viewport.refresh()
 
 

@@ -249,3 +249,220 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .bom-table tr.elsewhere td { color: var(--muted); }
 .bom-table tr.hw-head td { background: none; color: var(--accent); font-size: 10px; font-weight: 600;
                            text-transform: uppercase; letter-spacing: .04em; padding-top: 8px; }
+
+/* Step details: the name field spans the card like the notes */
+#stepName { width: 100%; box-sizing: border-box; }
+
+/* Parts card: bulk buttons (while parts are ticked), footer, right-click menu */
+.bulk-bar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; margin: 0 0 6px; background: var(--accent-soft);
+            border-radius: var(--radius); }
+.bulk-bar .btn.danger { color: var(--danger); }
+.bulk-bar .btn.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+.items-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; }
+.ctx-menu { position: fixed; z-index: 50; min-width: 190px; background: var(--surface); border: 1px solid var(--line);
+            border-radius: 4px; box-shadow: 0 6px 18px rgba(0, 0, 0, .18); padding: 4px 0; }
+.ctx-title { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 3px 12px 4px; }
+.ctx-item { display: block; width: 100%; text-align: left; font: inherit; font-size: 12px; background: none; border: none;
+            color: var(--fg); padding: 5px 12px; cursor: pointer; }
+.ctx-item:hover { background: var(--accent-soft); }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item.danger:hover { background: var(--danger); color: #fff; }
+.ctx-sep { height: 1px; background: var(--line-soft); margin: 4px 0; }
+
+/* Steps tab: prompt to take thumbnails again (new computer) */
+.thumbs-missing { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px;
+                  background: var(--accent-soft); border-radius: var(--radius); padding: 5px 8px; margin: 0 0 8px; }
+
+/* Part pictures in the part lists (drawn by app.js from a coarse mesh) */
+.pthumb { width: 32px; height: 32px; flex: none; border-radius: 3px; background: var(--bg) center / contain no-repeat;
+          border: 1px solid var(--line-soft); margin-right: 2px; }
+
+/* Parts tab tree: assemblies collapse; parts indent under them */
+#unassigned li { padding-left: calc(var(--ud, 0) * 16px + 4px); gap: 6px; }
+.u-caret { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
+           background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; }
+.u-caret.none { cursor: default; }
+.u-caret svg { width: 10px; height: 10px; transition: transform .12s; }
+.u-caret.open svg { transform: rotate(90deg); }
+.u-caret:hover { color: var(--fg); }
+#unassigned li.u-group .name > div:first-child { font-weight: 600; }
+#unassigned li input:disabled { opacity: .6; }
+
+/* Parts tab: the list fills the panel's height (scrolls inside), the filter bar stays put */
+.pane.active[data-pane="parts"] { display: flex; flex-direction: column; overflow: hidden; }
+.pane[data-pane="parts"] > .hint, .pane[data-pane="parts"] > .pane-bar { flex: none; }
+#unassigned { flex: 1; min-height: 0; max-height: none; }
+
+/* ------------------------------------------------------------ quieter UI + icons (data-icon / data-info) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.btn svg, .icon-btn svg, .card-head h3 svg, .hint-key svg, .ctx-label svg {
+  width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round; }
+.btn.small svg { width: 12px; height: 12px; }
+.btn.icon-only { padding: 1px 6px; }
+.btn.link svg { width: 12px; height: 12px; }
+.card-head h3 { display: flex; align-items: center; gap: 6px; }
+.card-head h3 > svg { color: var(--accent); opacity: .85; }
+.card-head h3 .info { display: inline-flex; color: var(--muted); opacity: .6; cursor: help; margin-left: 2px; }
+.card-head h3 .info:hover { opacity: 1; color: var(--accent); }
+.card-head h3 .info svg { width: 12px; height: 12px; }
+.hint-key { display: inline-flex; color: var(--muted); opacity: .7; cursor: help; margin-left: auto; padding: 2px; }
+.pane-bar .hint-key { margin-left: 0; }
+.hint-key:hover { opacity: 1; }
+.bulk-bar .spacer { flex: 1; }
+.view-actions .btn { justify-content: flex-start; }
+.view-actions .sub { display: block; margin-top: 2px; }
+#viewHint { margin-top: 6px; cursor: default; }
+#viewHint .ok { color: var(--accent); }
+#viewHint .warn-text { color: var(--muted); font-style: italic; }
+.folder-row { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
+.folder-row .folder { flex: 1; min-width: 0; margin-right: 4px; }
+.context-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.context-row label { margin: 0; font-size: 11px; }
+.context-row select { flex: 1; min-width: 0; font-size: 11px; min-height: 22px; }
+.ctx-label { display: inline-flex; cursor: help; }
+/* Parts rows: the moves a part is in as small numbered chips (nothing when not exploded) */
+.in-moves { display: inline-flex; gap: 2px; }
+.in-moves b { font-size: 10px; font-weight: 600; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
+              background: var(--accent-soft); color: var(--accent); display: inline-flex; align-items: center; justify-content: center; }
+
+.detail-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.detail-row label.inline { margin: 0; }
+.detail-row #stepRepeat { width: 56px; flex: none; }
+.detail-row .spacer { flex: 1; }
+.detail-row .check { margin: 0; }
+
+/* ------------------------------------------------------------ breathing room (overrides the compact sizes above) */
+.pane { padding: 12px; }
+.pane-bar { margin-bottom: 12px; gap: 8px; }
+.card { padding: 12px 14px 14px; margin-bottom: 12px; }
+.card-head { margin-bottom: 10px; min-height: 24px; }
+.card-head + label, .card-head + .grid > div > label:first-child { margin-top: 0; }
+label { margin: 12px 0 4px; }
+label.check { margin: 10px 0 4px; }
+.grid { gap: 0 12px; }
+input, select, textarea { min-height: 26px; padding: 4px 7px; }
+.actions-row { margin: 12px 0 0; gap: 8px; }
+.view-row { gap: 14px; }
+.view-actions { gap: 6px; }
+.thumb.big { width: 140px; height: 105px; }          /* 4:3 */
+#viewHint, .view-row + .sub { margin-top: 10px; }
+.items-head { margin: 0 0 8px; }
+.bulk-bar { margin: 0 0 8px; padding: 6px 8px; gap: 6px; }
+ul.list li { padding: 6px 10px; gap: 10px; }
+.items-foot { margin-top: 10px; }
+.ex-row { padding: 5px 2px; gap: 6px; }
+.context-row { margin-top: 12px; }
+.detail-row { margin-top: 12px; }
+.folder-row { margin-bottom: 6px; }
+.step-head { margin-bottom: 12px; }
+.section { margin-bottom: 12px; }
+.section-head { padding: 8px 10px; }
+.steps { padding: 4px 0 6px 16px; }
+.step { padding: 5px 8px 5px 2px; gap: 8px; }
+.thumbs-missing { margin-bottom: 12px; padding: 7px 10px; }
+
+/* ------------------------------------------------------------ folding cards (click the title) */
+.card-head h3 { cursor: pointer; user-select: none; }
+.card-head h3 .fold { display: inline-flex; color: var(--muted); margin-left: -4px; }
+.card-head h3 .fold svg { width: 11px; height: 11px; transition: transform .12s; }
+.card.collapsed .card-head h3 .fold svg { transform: rotate(-90deg); }
+.card.collapsed > :not(.card-head) { display: none !important; }
+.card.collapsed { padding-top: 8px; padding-bottom: 8px; margin-bottom: 8px; }
+.card.collapsed .card-head { margin-bottom: 0; }
+.count:empty { display: none; }
+.fold-sum { display: none; text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 11px; color: var(--muted); }
+.fold-sum.ok { color: var(--accent); }
+.card.collapsed .fold-sum { display: inline; }
+
+.card[data-nofold] .card-head h3 { cursor: default; }
+
+/* Step details: no field labels (placeholders + tooltips), notes grow with their text */
+.card[data-nofold] .card-head { margin-bottom: 8px; }
+.step-name { width: 100%; font-weight: 600; }
+.step-notes { margin-top: 6px; resize: none; overflow-y: auto; min-height: 44px; line-height: 1.4; }
+.card[data-nofold] .detail-row { margin-top: 8px; }
+.card[data-nofold] { padding-bottom: 10px; }
+
+/* Steps tab: the dashed "+ Add step" row at the end of each section */
+.add-step { display: flex; align-items: center; justify-content: center; gap: 6px; width: calc(100% - 8px);
+            margin: 6px 8px 4px 0; padding: 7px 8px; font: inherit; font-size: 12px; color: var(--muted);
+            background: none; border: 1px dashed var(--line); border-radius: var(--radius); cursor: pointer; }
+.add-step svg { width: 12px; height: 12px; }
+.add-step:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.add-section { width: 100%; margin: 0 0 12px; padding: 10px 8px; background: var(--surface); }
+
+.add-section.first { background: var(--accent); border: 1px solid var(--accent); color: var(--on-accent); font-weight: 600; }
+.add-section.first:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+.pane[data-pane="steps"] .pane-bar { justify-content: flex-end; }
+
+/* Drag handles: a six-dot grip with a big target, always faintly visible */
+.grip { display: inline-flex; align-items: center; justify-content: center; width: 20px; min-height: 28px; flex: none;
+        cursor: grab; color: var(--muted); opacity: .35; border-radius: var(--radius); user-select: none; }
+.grip .grip-dots { width: 16px; height: 16px; fill: currentColor; stroke: none; pointer-events: none; }
+.step .grip, .ex-row .grip { opacity: .35; font-size: inherit; letter-spacing: 0; padding: 0; }
+.step:hover .grip, .ex-row:hover .grip { opacity: .8; }
+.grip:hover { opacity: 1 !important; background: var(--hover); color: var(--fg); }
+.grip:active { cursor: grabbing; }
+
+.card-head h3 { white-space: nowrap; min-width: 0; }
+.card-head .card-tools { flex: none; }
+
+/* Bigger step pictures: list thumbnails, and the View & image preview filling the card */
+.step .thumb { width: 72px; height: 54px; font-size: 12px; }
+.view-row .thumb.big { width: auto; flex: 1 1 60%; height: auto; aspect-ratio: 4 / 3; max-width: 260px; }
+.view-row .view-actions { flex: 0 1 40%; min-width: 110px; }
+
+/* Narrow panel: titles shrink (ellipsis) before anything overlaps, and header buttons drop
+   their text (icon + tooltip only) when the card itself is narrow. */
+.card { container-type: inline-size; }
+.card-head { min-width: 0; }
+.card-head h3 { flex: 1 1 auto; overflow: hidden; }
+.card-head h3 > .lbl { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.card-head h3 > svg, .card-head h3 .fold, .card-head h3 .info, .card-head h3 .count { flex: none; }
+@container (max-width: 330px) {
+  .card-head .card-tools .btn .lbl { display: none; }
+  .card-head .card-tools .btn { padding: 1px 6px; }
+}
+@container (max-width: 250px) {
+  .view-row { flex-direction: column; }
+  .view-row .thumb.big { width: 100%; max-width: none; }
+  .view-row .view-actions { width: 100%; }
+}
+/* Narrow panel: the tab bar scrolls instead of cutting off Settings; cards and explode rows tighten */
+.tabs { overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { flex: none; }
+.tabs .tab.icon { margin-left: auto; }
+@container (max-width: 330px) {
+  .ex-row { gap: 3px; }
+  .ex-row .name { min-width: 36px; }
+  .ex-row select.ex-axis { width: 50px; }
+  .ex-row .dist-input { width: 40px; }
+  .ex-row .grip { width: 14px; }
+}
+@container (max-width: 280px) {
+  .ex-row .trail-toggle, .ex-row [data-act="exExpand"] { display: none; }   /* (still in the move's editor) */
+  .context-row { flex-wrap: wrap; }
+}
+@media (max-width: 300px) {
+  .pane { padding: 8px; }
+  .card { padding: 10px 10px 12px; }
+  .detail-row { flex-wrap: wrap; }
+}
+
+/* Section picture: a big preview with its buttons beside it */
+.sec-picture { align-items: flex-start; gap: 12px; padding: 10px 12px 10px 18px; white-space: normal; color: var(--fg); }
+.sec-picture .thumb.big { flex: 1 1 60%; width: auto; height: auto; aspect-ratio: 4 / 3; max-width: 220px; }
+.sec-pic-side { flex: 0 1 40%; min-width: 108px; display: flex; flex-direction: column; gap: 5px; }
+.sec-pic-title { display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 12px; }
+.sec-pic-title svg { color: var(--accent); }
+.sec-pic-side .sub { margin-bottom: 2px; }
+.sec-pic-side .btn { justify-content: flex-start; width: 100%; }
+.section { container-type: inline-size; }
+@container (max-width: 260px) {
+  .sec-picture { flex-direction: column; }
+  .sec-picture .thumb.big { width: 100%; max-width: none; }
+  .sec-pic-side { width: 100%; }
+}

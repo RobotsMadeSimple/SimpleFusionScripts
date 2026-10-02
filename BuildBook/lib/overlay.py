@@ -20,6 +20,8 @@ CROP_GROUP_ID = "BuildBookCrop"
 FRAME_COLOR = (255, 120, 0)
 OUTLINE_COLOR = (20, 20, 20)       # thin dark line around the frame, for contrast
 OUTLINE_GAP = 2                    # px outside the frame
+TICK = 0.06                        # midline ticks: length as a share of the frame's shorter side...
+TICK_MIN = 14                      # ...but at least this many px
 
 
 def _color(rgb):
@@ -31,12 +33,17 @@ def _box(left, top, right, bottom):
 
 
 def _shapes(rect):
-    """Pixel polylines to draw: the frame and its dark outline."""
+    """Pixel polylines to draw: the frame, its dark outline, and a tick at the middle of each
+    side pointing inward (to line the shot up on the centre lines)."""
     left, top, w, h = rect
     right, bottom = left + w, top + h
     g = OUTLINE_GAP
+    cx, cy = left + w / 2.0, top + h / 2.0
+    t = max(TICK_MIN, TICK * min(w, h))
     return {"frame": [_box(left, top, right, bottom)],
-            "outline": [_box(left - g, top - g, right + g, bottom + g)]}
+            "outline": [_box(left - g, top - g, right + g, bottom + g)],
+            "ticks": [[(cx, top), (cx, top + t)], [(cx, bottom), (cx, bottom - t)],
+                      [(left, cy), (left + t, cy)], [(right, cy), (right - t, cy)]]}
 
 
 class _Projector:
@@ -132,8 +139,8 @@ class CropOverlay:
         group = design.rootComponent.customGraphicsGroups.add()
         group.id = CROP_GROUP_ID
         self._group = group
-        styles = {"outline": (OUTLINE_COLOR, 1.0), "frame": (FRAME_COLOR, 3.0)}
-        for name in ("outline", "frame"):
+        styles = {"outline": (OUTLINE_COLOR, 1.0), "frame": (FRAME_COLOR, 3.0), "ticks": (FRAME_COLOR, 2.0)}
+        for name in ("outline", "frame", "ticks"):
             lines = shapes[name]
             entity = group.addLines(adsk.fusion.CustomGraphicsCoordinates.create(projector.coords(lines)),
                                     [], True, [len(line) for line in lines])

@@ -206,7 +206,12 @@ class Scene:
             if not self._user_visible(occ):
                 continue
             ours = any(p in self._hidden_occs for p in [*_ancestors(path), path])
-            bodies = [b for b in occ.bRepBodies if (b.isLightBulbOn if ours else b.isVisible)]
+            if isinstance(occ, refs.BodyPart) and path in self._hidden_occs:
+                # A split body we hid: its light bulb is the one we switched off, so it's still
+                # this part's body (skipping it would count it as not ours and switch it back on).
+                bodies = [occ.body]
+            else:
+                bodies = [b for b in occ.bRepBodies if (b.isLightBulbOn if ours else b.isVisible)]
             if not bodies:
                 continue
             owners = [p for p in [*_ancestors(path), path] if p in current]
@@ -571,7 +576,7 @@ class Scene:
             self._style(entity, state)
 
 
-def sweep(design, everything=False, ids=(GROUP_ID, CROP_GROUP_ID, "BuildBookAnchor")):
+def sweep(design, everything=False, ids=(GROUP_ID, CROP_GROUP_ID, "BuildBookAnchor", "BuildBookPickHighlight")):
     """Delete BuildBook's custom-graphics groups in a design (all groups with `everything`).
 
     Returns how many were removed. `everything` is for leftovers from before
