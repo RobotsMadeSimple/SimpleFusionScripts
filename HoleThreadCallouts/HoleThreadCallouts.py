@@ -29,6 +29,7 @@ from .lib import callouts, clipboard, holes as holes_mod, log
 PALETTE_ID = "holeThreadCalloutsPalette"
 PALETTE_NAME = "Hole & Thread Callouts"
 COMMAND_ID = "holeThreadCalloutsShow"
+RELOAD_EVENT = "holeThreadCalloutsReload"   # custom event: reload the add-in's code (the panel's reload button)
 EDITOR_ID = "holeThreadCalloutsEditor"
 EDITOR_NAME = "Hole & thread callouts: edit view"
 ATTR_GROUP, ATTR_NAME = "ThreadCallouts", "data"   # (kept from the first name: existing designs' views)
@@ -37,6 +38,7 @@ THUMB_W = 240
 STYLES = {"thread": "WireframeWithVisibleEdgesOnlyVisualStyle", "shaded": "ShadedWithVisibleEdgesOnlyVisualStyle"}
 
 _handlers = []
+_events = []          # (event, handler) pairs, for reload_addin
 _ctrl = None
 
 
@@ -705,9 +707,42 @@ class Controller:
 
 # ---------------------------------------------------------------- event handlers
 
+def _place_palette(ui, palette):
+    """Start the panel under Fusion's browser: snapped below it when Fusion lists the browser
+    among its palettes, else docked left (where a pinned browser sits, so it stacks under it).
+    Only on the panel's first showing; after that it stays wherever the user moves it."""
+    ours = ("browserplus", "buildbook", "holethreadcallouts", "stockscout")
+    try:
+        ids = [ui.palettes.item(i).id for i in range(ui.palettes.count)]
+        log.info("palettes: " + ", ".join(ids))
+        browser = next((ui.palettes.itemById(i) for i in ids
+                        if "browser" in i.lower() and not i.lower().startswith(ours)), None)
+        if browser is not None and browser.isVisible:
+            palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+            if palette.snapTo(browser, adsk.core.PaletteSnapOptions.PaletteSnapOptionsBottom):
+                log.info("panel snapped under " + browser.id)
+                return
+    except Exception:
+        log.error("place panel under the browser")
+    palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateLeft
+    log.info("panel docked left")
+
+
 def _add(event, handler):
     event.add(handler)
     _handlers.append(handler)
+    _events.append((event, handler))      # detached again by reload_addin
+
+
+def _detach_events():
+    """Take this run's handlers off Fusion's events (a reload starts fresh ones)."""
+    for event, handler in _events:
+        try:
+            event.remove(handler)
+        except Exception:
+            pass
+    del _events[:]
+    del _handlers[:]
 
 
 class PaletteHTMLHandler(adsk.core.HTMLEventHandler):
@@ -715,6 +750,10 @@ class PaletteHTMLHandler(adsk.core.HTMLEventHandler):
         try:
             event = adsk.core.HTMLEventArgs.cast(args)
             if event.action == "response":
+                return
+            if event.action == "reloadAddin":
+                # Not from here: this runs inside the panel's own event, and reloading deletes the panel.
+                adsk.core.Application.get().fireCustomEvent(RELOAD_EVENT, "")
                 return
             _ctrl.handle(event.action, json.loads(event.data) if event.data else {})
             event.returnData = "OK"
@@ -740,13 +779,15 @@ class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
         try:
             ui = _ctrl.ui
             palette = ui.palettes.itemById(PALETTE_ID)
-            if not palette:
+            new = not palette
+            if new:
                 url = (pathlib.Path(os.path.abspath(__file__)).parent / "palette" / "index.html").as_uri()
                 palette = ui.palettes.add(PALETTE_ID, PALETTE_NAME, url, True, True, True, 360, 700)
-                palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
                 _add(palette.incomingFromHTML, PaletteHTMLHandler())
                 _add(palette.closed, PaletteClosedHandler())
             palette.isVisible = True
+            if new:
+                _place_palette(ui, palette)
             _ctrl.push_state()
         except Exception:
             log.error("show palette")
@@ -786,8 +827,77 @@ class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
             log.error("command terminated")
 
 
+def reload_addin():
+    """Stop, reload every module of the add-in from disk, start again and reopen the panel: picks
+    up new code (an update, an edit) without Fusion's Scripts and Add-Ins dialog."""
+    import importlib
+    import importlib.machinery
+    import sys
+    app = adsk.core.Application.get()
+    ui = app.userInterface
+    try:
+        log.info("reloading Hole & Thread Callouts")
+        stop(None)
+        _detach_events()
+        package = log.__name__.rpartition(".lib.")[0]      # however Fusion named the add-in's package
+        # Submodules first (reloaded in place, so "from . import x" references stay good), then
+        # this module, whose "from .lib import x" lines pick up the new code.
+        for name in sorted(n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__):
+            module = sys.modules.get(name)
+            if module is not None:
+                importlib.reload(module)
+        # Fusion loads this file under a made-up module name importlib.reload can't find, so run the
+        # file's new code into the same module object instead (its globals become the new ones).
+        main = sys.modules[__name__]
+        importlib.machinery.SourceFileLoader(__name__, __file__).exec_module(main)
+        main.run(None)
+        cmd = ui.commandDefinitions.itemById(COMMAND_ID)
+        if cmd is not None:
+            cmd.execute()                       # reopen the panel
+        main.log.info("Hole & Thread Callouts reloaded")
+    except Exception:
+        log.error("reload")
+        ui.messageBox("Hole & Thread Callouts couldn't reload:\n{}\n\nUse Utilities > Scripts and Add-Ins to stop and run it.".format(
+            traceback.format_exc()))
+
+
+class ReloadHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        reload_addin()
+
+
+# Fusion can load the same add-in twice (e.g. from the AddIns folder and from a path added in
+# Scripts and Add-Ins). Two copies both answer the same buttons, so only the first one runs.
+_SINGLE_KEY = "_rms_holethreadcallouts_module"
+
+
+def _claim():
+    """True if this copy may run (no other copy of the add-in is running)."""
+    import sys
+    other = getattr(sys, _SINGLE_KEY, None)
+    if other and other != __name__ and other in sys.modules:
+        log.info("another copy of this add-in is already running ({}); this one ({}) stays off".format(
+            other, os.path.dirname(os.path.abspath(__file__))))
+        return False
+    setattr(sys, _SINGLE_KEY, __name__)
+    return True
+
+
+def _mine():
+    import sys
+    return getattr(sys, _SINGLE_KEY, None) == __name__
+
+
+def _release():
+    import sys
+    if _mine():
+        delattr(sys, _SINGLE_KEY)
+
+
 def run(context):
     global _ctrl
+    if not _claim():
+        return
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:
@@ -803,12 +913,20 @@ def run(context):
             panel.controls.addCommand(cmd_def)
         _add(app.documentActivated, DocSwitchHandler())
         _add(ui.commandTerminated, CommandTerminatedHandler())
+        try:
+            app.unregisterCustomEvent(RELOAD_EVENT)
+        except Exception:
+            pass
+        _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
     except Exception:
         log.error("run")
         ui.messageBox("Hole & Thread Callouts failed to start:\n{}".format(traceback.format_exc()))
 
 
 def stop(context):
+    if not _mine():
+        return
+    _release()                  # (a reload claims it again in run)
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:

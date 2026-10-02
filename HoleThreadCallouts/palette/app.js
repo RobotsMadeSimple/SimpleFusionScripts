@@ -347,6 +347,7 @@
   // ------------------------------------------------------------ wiring
 
   $('refresh').addEventListener('click', function () { send('refresh'); });
+  $('reloadAddin').addEventListener('click', function () { send('reloadAddin'); });
   $('styleWire').addEventListener('click', function () { send('style', { kind: 'thread' }); });
   $('styleShaded').addEventListener('click', function () { send('style', { kind: 'shaded' }); });
   $('notice').addEventListener('click', function () { $('notice').classList.add('hidden'); });
