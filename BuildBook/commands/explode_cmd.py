@@ -345,8 +345,9 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             inputs.addStringValueInput("name", "Name", owner.working.get("name", ""))
 
             parts = inputs.addSelectionInput("parts", "Parts", "Parts in this move (click moved copies too)")
+            # Whole parts / assemblies only (as Fusion reports a click); a click on a split component
+            # is narrowed to the body under the cursor in _Select (refs.split_body_at).
             parts.addSelectionFilter("Occurrences")
-            parts.addSelectionFilter("SolidBodies")         # (bodies of split components)
             parts.addSelectionFilter(adsk.core.SelectionCommandInput.CustomGraphics)
             parts.setSelectionLimits(0, 0)
 
@@ -442,11 +443,6 @@ class _PreSelect(adsk.core.SelectionEventHandler):
             if args.activeInput is None or args.activeInput.id != "parts":
                 return
             entity = args.selection.entity
-            body = adsk.fusion.BRepBody.cast(entity)
-            if body is not None:
-                # A split component's body is a part of its own; any other body stands for its occurrence.
-                args.isSelectable = body.assemblyContext is not None
-                return
             if adsk.fusion.Occurrence.cast(entity) is None and self.owner.ctrl.scene.pickable_path(entity) is None:
                 args.isSelectable = False
         except Exception:

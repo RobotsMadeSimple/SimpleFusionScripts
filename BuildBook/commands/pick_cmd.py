@@ -80,8 +80,8 @@ class PickCommand:
         occ = body.assemblyContext
         if occ is None:
             return None  # root-component body: not a part we can track
-        if refs.is_split(occ) and (self.level != LEVEL_TOP or model.PATH_SEP not in occ.fullPathName):
-            return refs.BodyPart(occ, body)     # a split component: each body is a part
+        if refs.is_split(occ):
+            return refs.BodyPart(occ, body)     # a split component: each body is a part (at any level)
         if self.level == LEVEL_TOP:
             top = occ.fullPathName.split(model.PATH_SEP)[0]
             return refs.path_index(self.ctrl.design()).get(top, occ)
