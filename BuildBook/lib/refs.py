@@ -311,6 +311,11 @@ def _display_name(occ, fallback, short=True):
     return fallback
 
 
+def body_base_name(name):
+    """A body's name without the " (N)" Fusion adds to copies: "Pin (2)" -> "Pin"."""
+    return re.sub(r"\s*\(\d+\)$", "", name or "")
+
+
 def bom_line(occ, ref_name, short=True):
     """(key, label, is_hardware) for a parts list: one line per component, labelled with the
     component's (short hardware) name, not the instance's ("KP001_12", not "KP001_12:4")."""
@@ -318,7 +323,8 @@ def bom_line(occ, ref_name, short=True):
         base = re.sub(r":\d+$", "", ref_name or "")
         return base, base, hardware.short_name(base) is not None
     if isinstance(occ, BodyPart):         # a split component's body: one line per body name
-        return component_key(occ.component) + "#" + occ.name, occ.name, hardware.short_name(occ.name) is not None
+        name = body_base_name(occ.name)   # ("Pin (1)", "Pin (2)": one line, "Pin" x2)
+        return component_key(occ.component) + "#" + name, name, hardware.short_name(name) is not None
     comp = occ.component
     try:
         key = "{}|{}".format(comp.id, comp.name)

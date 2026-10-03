@@ -517,7 +517,7 @@
         '</li>';
     }
     var byComp = {}, html = [], done = {};
-    function itemKey(it) { return it.path.indexOf('+#') >= 0 ? it.path : (it.component || it.path); }
+    function itemKey(it) { return it.path.indexOf('+#') >= 0 ? bodyKey(it.path) : (it.component || it.path); }
     detail.items.forEach(function (it) { (byComp[itemKey(it)] = byComp[itemKey(it)] || []).push(it); });
     itemCopies = {};
     detail.items.forEach(function (it) {
@@ -747,7 +747,13 @@
   }
 
   var copyGroups = {};               // "parent|component" -> paths of the copies folded into one row
-  function copyName(name) { return name.replace(/:\d+$/, ''); }
+  // "Bolt:3" -> "Bolt"; a body "Pin (2)" -> "Pin" (Fusion numbers bodies copied in a part).
+  function copyName(name) { return name.replace(/:\d+$/, '').replace(/\s*\(\d+\)$/, ''); }
+  // A split part's body: same part + same name apart from the "(N)" -> one group of copies.
+  function bodyKey(path) {
+    var i = path.indexOf('+#');
+    return 'b:' + path.slice(0, i) + '+#' + copyName(path.slice(i + 2));
+  }
 
   function renderUnassigned() {
     var list = state.unassigned;
@@ -820,7 +826,7 @@
       var list = kids[parent] || [];
       var byComp = {};
       // (A split part's bodies share its component but aren't copies: each keeps its own row.)
-      function copyKey(u) { return u.path.indexOf('+#') >= 0 ? u.path : (u.component || u.path); }
+      function copyKey(u) { return u.path.indexOf('+#') >= 0 ? bodyKey(u.path) : (u.component || u.path); }
       list.forEach(function (u) { var k = copyKey(u); (byComp[k] = byComp[k] || []).push(u); });
       var done = {};
       list.forEach(function (u) {
