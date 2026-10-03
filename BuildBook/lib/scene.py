@@ -14,7 +14,7 @@ solid custom-graphics copy in place.
 import adsk.core
 import adsk.fusion
 
-from . import explode, log, model, refs
+from . import explode, hidden_record, log, model, refs
 from .overlay import CROP_GROUP_ID
 
 EDGE_TOLERANCE_CM = 0.01
@@ -23,6 +23,7 @@ PREVIEW_COLOR = (70, 130, 230)
 PREVIEW_OPACITY = 0.55
 GHOST_COLOR = (205, 205, 205)
 HIGHLIGHT_COLOR = (0, 120, 215)     # checked parts, like Fusion's selection blue
+HOVER_COLOR = (0, 200, 255)         # explode dialog: the copy under the cursor (what a click picks)
 TRAIL_OFF_COLOR = (160, 160, 160)   # hidden trail lines, only drawn while editing lines
 TRAIL_HOVER_COLOR = (255, 120, 0)
 SEGMENT_SEP = "|"
@@ -85,8 +86,11 @@ class Scene:
         self.lines_editing = False
         self.pick_hidden = False    # Edit lines: hidden (faint) lines clickable too
         self._pickable = set()      # paths of copies clickable in the explode command
+        self._copy_groups = {}      # path -> its copy's graphics group (explode command)
+        self.copy_places = []       # [(path, occurrence, world offset)] of drawn copies (explode command)
         self._bodies = []           # (leaf path, mesh entity, its normal colour) of drawn copies
         self.highlighted = set()    # part paths shown highlighted (checked in the panel)
+        self.hover = None           # explode dialog: part whose copies draw as hovered
 
     # ------------------------------------------------------------ public
 
@@ -109,7 +113,7 @@ class Scene:
         self._mesh_cache.clear()
         self._edge_cache.clear()
 
-    def show(self, design, manual, step_id, edit=False, current=None, upto=None):
+    def show(self, design, manual, step_id, edit=False, current=None, upto=None, hover=None):
         """Render a step, running its explode moves in order.
 
         `upto` stops after that explode move (the panel's "state up to this
@@ -117,11 +121,13 @@ class Scene:
         copy of the manual) moved copies are pickable (their graphics id is
         the occurrence path) and parts in `current` draw as a blue preview.
         """
-        # The explode dialog (sticky) keeps the full reset: Fusion's preview
-        # rollback can undo visibility behind our back there.
-        self._reset(restore=self.sticky)
+        # Never switch everything back on first: each light-bulb change is a model change, and
+        # doing all of them on every render made dragging in the explode dialog take ~0.6 s a
+        # frame. _apply_visibility checks the real light bulbs instead (Fusion's preview
+        # rollback can change them behind our back) and only switches what differs.
         _, step = model.find_step(manual, step_id)
         if step is None:
+            self._reset(restore=False)
             self._restore_visibility()
             self.step_id = None
             return
@@ -130,6 +136,7 @@ class Scene:
         self.upto = upto if model.find_explode(step, upto) else None
 
         with log.timed("scene.show " + step["title"]):
+            self.hover = hover          # a part (path) whose copies draw highlighted
             self._render(design, manual, step, edit, set(current or ()))
 
     # ------------------------------------------------------------ internals
@@ -156,6 +163,8 @@ class Scene:
         self._segment_states = {}
         self.pick_hidden = False
         self._pickable = set()
+        self._copy_groups = {}
+        self.copy_places = []
         self._bodies = []
         self.lines_editing = False
         if restore:
@@ -177,6 +186,24 @@ class Scene:
         if not self.sticky:
             self._hidden_occs = {}
             self._hidden_bodies = {}
+        self._save_record()
+
+    def _save_record(self):
+        """Keep the on-disk record of what we hid current (see hidden_record: crash safety)."""
+        try:
+            design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+            if design is None:
+                return
+            occs = [p for p, o in self._hidden_occs.items() if o.isValid and not o.isLightBulbOn]
+            bodies = []
+            for b in self._hidden_bodies.values():
+                if b.isValid and not b.isLightBulbOn:
+                    entry = hidden_record.body_entry(b)
+                    if entry is not None:
+                        bodies.append(entry)
+            hidden_record.record(design, "scene", occs, bodies)
+        except Exception:
+            log.error("save the hidden-parts record")
 
     def _render(self, design, manual, step, edit, editing):
         settings = manual["settings"]
@@ -200,6 +227,7 @@ class Scene:
         # Decide what each occurrence with its own visible bodies should look like.
         mode_for = {model.EARLIER: earlier_mode, model.LATER: later_mode, model.UNASSIGNED: unassigned_mode}
         plans = []          # (occ, bodies, desired, world_offset)
+        places = []         # explode dialog: where each drawn copy is (copy_places)
         for path, occ in index.items():
             if refs.is_split(occ):
                 continue                # its bodies are parts of their own (BodyPart entries)
@@ -229,52 +257,58 @@ class Scene:
                 offset = (0.0, 0.0, 0.0)
                 desired = mode_for[model.leaf_state(manual, step["id"], path)]
             plans.append((occ, bodies, desired, offset))
+            if edit and desired in ("exploded", PREVIEW):
+                places.append((path, occ, offset))
 
         # Root-component bodies count as unassigned.
         root_bodies = [b for b in design.rootComponent.bRepBodies
                        if b.isVisible or b.entityToken in self._hidden_bodies]
 
         # Trail line anchors must be read while everything is still at home.
-        self.segments = self._trail_segments(current, anchors)
+        segments = self._trail_segments(current, anchors)
 
+        # Moved parts are hidden at home; their drawn copies stand for them (in the explode
+        # dialog the copies are clickable: blue = in the move being edited).
         hide_paths = {occ.fullPathName for occ, _, desired, _ in plans
                       if desired in ("exploded", PREVIEW, model.HIDDEN, model.GHOSTED)}
+        hide_bodies = {b.entityToken: b for b in root_bodies} if unassigned_mode != model.SHOWN else {}
+        occ_by_path = {occ.fullPathName: occ for occ, _, _, _ in plans}
+        hide_top = {p: occ_by_path[p] for p in hide_paths
+                    if not any(a in hide_paths for a in _ancestors(p))}
 
+        # (Every render is a full rebuild: inside the explode dialog Fusion's preview rollback
+        # removes what the previous preview drew, so there's nothing to move in place.)
+        self._reset(restore=False)
+        self.segments, self.copy_places = segments, places
         self._group = design.rootComponent.customGraphicsGroups.add()
         self._group.id = GROUP_ID
         ghost = self._ghost_effect(settings)
-        preview = adsk.fusion.CustomGraphicsBasicMaterialColorEffect.create(
-            _color(PREVIEW_COLOR), _color(PREVIEW_COLOR), _color((255, 255, 255)),
-            _color((0, 0, 0)), 30.0, PREVIEW_OPACITY)
         draw_edges = settings.get("drawEdges", True)
 
         drawn = 0
         for occ, bodies, desired, offset in plans:
             path = occ.fullPathName
             hidden_by_parent = any(a in hide_paths for a in _ancestors(path))
-            if desired == "exploded":
+            if desired in ("exploded", PREVIEW) and self.hover and model.is_self_or_ancestor(self.hover, path):
+                # Under the cursor in the explode dialog: bright, outlined (PREVIEW draws the outline).
+                drawn += self._draw_bodies(occ, bodies, offset, PREVIEW, None, False, outline=(HOVER_COLOR, 3.0))
+            elif desired == "exploded":
                 drawn += self._draw_bodies(occ, bodies, offset, SOLID, None, draw_edges)
             elif desired == PREVIEW:
-                drawn += self._draw_bodies(occ, bodies, offset, PREVIEW, preview, False)
+                drawn += self._draw_bodies(occ, bodies, offset, PREVIEW, None, False, outline=(HIGHLIGHT_COLOR, 2.0))
             elif desired == model.GHOSTED:
                 drawn += self._draw_bodies(occ, bodies, offset, GHOST, ghost, False)
             elif desired == model.SHOWN and hidden_by_parent:
                 drawn += self._draw_bodies(occ, bodies, offset, SOLID, None, draw_edges)
 
-        hide_bodies = {}
-        if unassigned_mode != model.SHOWN:
+        if unassigned_mode == model.GHOSTED:
             for body in root_bodies:
-                if unassigned_mode == model.GHOSTED:
-                    drawn += self._draw_bodies(None, [body], (0.0, 0.0, 0.0), GHOST, ghost, False)
-                hide_bodies[body.entityToken] = body
+                drawn += self._draw_bodies(None, [body], (0.0, 0.0, 0.0), GHOST, ghost, False)
 
         self._draw_trails(settings)
 
         # Hide last, after every query that depends on visibility. Only the top
         # of each hidden branch needs its light bulb off.
-        occ_by_path = {occ.fullPathName: occ for occ, _, _, _ in plans}
-        hide_top = {p: occ_by_path[p] for p in hide_paths
-                    if not any(a in hide_paths for a in _ancestors(p))}
         shown, hidden = self._apply_visibility(hide_top, hide_bodies)
 
         log.info("scene: {} occurrences, {} drawn bodies, {} hidden ({} turned on, {} turned off), {} trails".format(
@@ -295,12 +329,28 @@ class Scene:
 
         Returns (turned on, turned off) counts.
 
-        In sticky mode (explode dialog) everything was already restored by the
-        full reset and the record of touched parts must only grow, so this
-        just hides and records.
+        In sticky mode (explode dialog) the record of touched parts only grows (so closing
+        the dialog puts back everything it ever touched), and the real light bulbs are
+        checked both ways, since Fusion's preview rollback can switch them behind our back.
         """
         shown = hidden = 0
         if self.sticky:
+            for path, occ in self._hidden_occs.items():
+                if path not in hide_occs:
+                    try:
+                        if occ.isValid and not occ.isLightBulbOn:
+                            occ.isLightBulbOn = True
+                            shown += 1
+                    except Exception:
+                        log.error("restore occurrence visibility")
+            for token, body in self._hidden_bodies.items():
+                if token not in hide_bodies:
+                    try:
+                        if body.isValid and not body.isLightBulbOn:
+                            body.isLightBulbOn = True
+                            shown += 1
+                    except Exception:
+                        log.error("restore body visibility")
             for path, occ in hide_occs.items():
                 if occ.isLightBulbOn:
                     occ.isLightBulbOn = False
@@ -311,6 +361,7 @@ class Scene:
                     body.isLightBulbOn = False
                     hidden += 1
                 self._hidden_bodies[token] = body
+            self._save_record()
             return shown, hidden
         for path, occ in list(self._hidden_occs.items()):
             if path not in hide_occs:
@@ -342,6 +393,7 @@ class Scene:
                 body.isLightBulbOn = False
                 hidden += 1
             self._hidden_bodies[token] = body
+        self._save_record()
         return shown, hidden
 
     def _trail_segments(self, current, anchors):
@@ -379,7 +431,7 @@ class Scene:
         matrix.translation = adsk.core.Vector3D.create(t.x + offset[0], t.y + offset[1], t.z + offset[2])
         return matrix
 
-    def _draw_bodies(self, occ, bodies, offset, style, effect, draw_edges):
+    def _draw_bodies(self, occ, bodies, offset, style, effect, draw_edges, outline=(None, 2.0)):
         matrix = self._placement(occ, offset)
         # Pickable copies (explode command) get a sub-group per part, id = its
         # path, so whatever Fusion reports for a click resolves to one part.
@@ -389,6 +441,7 @@ class Scene:
             target = self._group.addGroup()
             target.id = occ.fullPathName
             self._pickable.add(occ.fullPathName)
+            self._copy_groups[occ.fullPathName] = target
         count = 0
         for body in bodies:
             native = body.nativeObject or body
@@ -407,6 +460,18 @@ class Scene:
                 self._bodies.append((occ.fullPathName, entity, entity.color))
             count += 1
 
+            if style == PREVIEW:
+                # The move being edited: shaded, edges in selection blue so its parts read as picked
+                # (cyan and thicker for the one under the cursor).
+                edges = self._edges(native)
+                if edges and edges[1]:
+                    lines = target.addLines(
+                        adsk.fusion.CustomGraphicsCoordinates.create(edges[0]), [], True, edges[1])
+                    lines.transform = matrix
+                    lines.isSelectable = False
+                    lines.weight = outline[1]
+                    lines.depthPriority = 1
+                    lines.color = adsk.fusion.CustomGraphicsSolidColorEffect.create(_color(outline[0] or HIGHLIGHT_COLOR))
             if draw_edges and style == SOLID:
                 edges = self._edges(native)
                 if edges and edges[1]:
@@ -502,6 +567,19 @@ class Scene:
             except Exception:
                 log.error("highlight")
 
+    def copy_entities(self, path):
+        """The drawn copy of a part (its group, then its first mesh), for a selection box."""
+        group = self._copy_groups.get(path)
+        out = []
+        try:
+            if group is not None and group.isValid:
+                out.append(group)
+                if group.count:
+                    out.append(group.item(0))
+        except Exception:
+            pass
+        return out
+
     def pickable_path(self, entity):
         """Occurrence path for a clicked explode-command copy, or None.
 
@@ -547,7 +625,7 @@ class Scene:
         lines.color = adsk.fusion.CustomGraphicsSolidColorEffect.create(_color(color))
         # While editing lines, shown lines are clickable; hidden ones only on request,
         # so overlapping lines resolve to a shown one.
-        lines.isSelectable = self.lines_editing and (state != "off" or self.pick_hidden)
+        lines.isSelectable = False      # (the line editor finds lines from its own mouse events)
         lines.depthPriority = 1 if state == "on" else 0
         self._segment_states[lines.id] = state
 
@@ -560,20 +638,30 @@ class Scene:
             entity = self._segment_entities.get(seg["id"])
             if entity is None:
                 self._add_segment(seg, "off")
-            else:
-                entity.isSelectable = True
 
     def set_pick_hidden(self, flag):
         """Edit lines: make hidden (faint) lines clickable or not."""
-        self.pick_hidden = bool(flag)
-        for seg_id, entity in self._segment_entities.items():
-            if entity.isValid and self._segment_states.get(seg_id) == "off":
-                entity.isSelectable = self.lines_editing and self.pick_hidden
+        self.pick_hidden = bool(flag)     # (the line editor's click search includes hidden lines)
 
     def style_segment(self, seg_id, state):
         entity = self._segment_entities.get(seg_id)
         if entity is not None and entity.isValid:
             self._style(entity, state)
+
+    def replace_segment(self, seg_id, state):
+        """Draw a segment again as a new line in `state`. Restyling the clicked line itself
+        doesn't stick: Fusion puts back the look it had when its hover / selection began,
+        and a new line has no such memory."""
+        seg = self.segments.get(seg_id)
+        if seg is None or self._group is None or not self._group.isValid:
+            return
+        old = self._segment_entities.pop(seg_id, None)
+        try:
+            if old is not None and old.isValid:
+                old.deleteMe()
+        except Exception:
+            log.error("replace trail line")
+        self._add_segment(seg, state)
 
 
 def sweep(design, everything=False, ids=(GROUP_ID, CROP_GROUP_ID, "BuildBookAnchor", "BuildBookPickHighlight")):

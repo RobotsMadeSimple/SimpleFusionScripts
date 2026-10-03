@@ -842,7 +842,10 @@ def reload_addin():
         package = log.__name__.rpartition(".lib.")[0]      # however Fusion named the add-in's package
         # Submodules first (reloaded in place, so "from . import x" references stay good), then
         # this module, whose "from .lib import x" lines pick up the new code.
-        for name in sorted(n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__):
+        # lib/ first: commands read its constants when they load (alphabetical put commands first,
+        # so a new constant in lib/model.py wasn't there yet for commands/explode_cmd.py).
+        mine = [n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__]
+        for name in sorted(mine, key=lambda n: (".lib." not in n + ".", n)):
             module = sys.modules.get(name)
             if module is not None:
                 importlib.reload(module)

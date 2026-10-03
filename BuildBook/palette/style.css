@@ -153,6 +153,7 @@ textarea { resize: vertical; }
 .thumb { width: 44px; height: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg) center / cover no-repeat;
          display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 10px; flex: none; }
 .thumb.big { width: 128px; height: 80px; font-size: 11px; }
+.thumb canvas.pic-preview { display: block; width: 100%; height: 100%; }
 .step .num { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; width: 16px; text-align: right; }
 .step .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step .meta { color: var(--muted); font-size: 11px; }
@@ -202,8 +203,20 @@ li.ex.active .ex-row:hover { background: transparent; }
 .ex-row .grip { color: var(--muted); cursor: grab; user-select: none; font-size: 10px; letter-spacing: -2px; opacity: .4; }
 .ex-row:hover .grip { opacity: 1; }
 .ex-row .num { color: var(--muted); font-size: 11px; width: 14px; text-align: right; font-variant-numeric: tabular-nums; }
-.ex-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.ex-row select.ex-axis { width: 60px; padding: 1px 3px; min-height: 22px; font-size: 11px; }
+.ex-row .name { flex: 1; min-width: 0; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; line-height: 1.25; }
+.ex-row .ex-title, .ex-row .ex-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ex-row .ex-sum { font-size: 11px; color: var(--muted); }
+.ex-row .ex-del { opacity: 0; }                     /* delete: only on the row under the cursor */
+.ex-row:hover .ex-del, .ex-row .ex-del:focus, .ex-row .ex-del[data-armed] { opacity: 1; }
+li.ex.open > .ex-row { background: var(--hover); }
+li.ex.peek > .ex-row { box-shadow: inset 3px 0 0 var(--accent); }   /* the canvas shows the step up to this move */
+.ex-parts-head { display: flex; align-items: center; justify-content: space-between; gap: 6px;
+                 font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
+.ex-part .pthumb { width: 28px; height: 28px; }
+.ex-part .mdir .sub { color: var(--muted); }
+.context-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
+.context-grid label { margin: 0; font-size: 12px; }
+.context-grid select { min-width: 0; }
 .dist-input { width: 56px; text-align: right; padding: 1px 5px; min-height: 22px; font-variant-numeric: tabular-nums; }
 .dist-input.own { font-weight: 600; color: var(--accent); border-color: var(--accent); }
 .trail-toggle { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 2px 4px;
@@ -256,8 +269,8 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 /* Parts card: bulk buttons (while parts are ticked), footer, right-click menu */
 .bulk-bar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; margin: 0 0 6px; background: var(--accent-soft);
             border-radius: var(--radius); }
-.bulk-bar .btn.danger { color: var(--danger); }
-.bulk-bar .btn.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
 .items-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; }
 .ctx-menu { position: fixed; z-index: 50; min-width: 190px; background: var(--surface); border: 1px solid var(--line);
             border-radius: 4px; box-shadow: 0 6px 18px rgba(0, 0, 0, .18); padding: 4px 0; }
@@ -278,7 +291,14 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
           border: 1px solid var(--line-soft); margin-right: 2px; }
 
 /* Parts tab tree: assemblies collapse; parts indent under them */
-#unassigned li { padding-left: calc(var(--ud, 0) * 16px + 4px); gap: 6px; }
+#items li { cursor: pointer; user-select: none; }   /* a click ticks the row */
+#items li.copy { padding-left: 24px; position: relative; }   /* a copy, under its "×N" row */
+#items li.copy::before { content: ""; position: absolute; left: 12px; top: 0; bottom: 0;
+                         border-left: 2px solid var(--line); }   /* guide line back to the group row */
+#items li.u-copies .u-caret svg { width: 14px; height: 14px; }
+#items li.u-copies .name > div:first-child { font-weight: 600; }
+#items li.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }   /* ticked / selected in Fusion */
+#unassigned li { padding-left: calc(var(--ud, 0) * 16px + 4px); gap: 6px; cursor: pointer; user-select: none; }
 .u-caret { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
            background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; }
 .u-caret.none { cursor: default; }
@@ -286,7 +306,9 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .u-caret.open svg { transform: rotate(90deg); }
 .u-caret:hover { color: var(--fg); }
 #unassigned li.u-group .name > div:first-child { font-weight: 600; }
+.copies-count { font-weight: 600; color: var(--accent); margin-left: 2px; }   /* "×4" on a row of copies */
 #unassigned li input:disabled { opacity: .6; }
+#unassigned li.fsel { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }   /* selected in Fusion */
 
 /* Parts tab: the list fills the panel's height (scrolls inside), the filter bar stays put */
 .pane.active[data-pane="parts"] { display: flex; flex-direction: column; overflow: hidden; }
@@ -310,6 +332,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .pane-bar .hint-key { margin-left: 0; }
 .hint-key:hover { opacity: 1; }
 .bulk-bar .spacer { flex: 1; }
+.bulk-bar.idle { background: var(--hover); }       /* nothing ticked: the actions wait */
 .view-actions .btn { justify-content: flex-start; }
 .view-actions .sub { display: block; margin-top: 2px; }
 #viewHint { margin-top: 6px; cursor: default; }
@@ -391,6 +414,7 @@ ul.list li { padding: 6px 10px; gap: 10px; }
 .add-step svg { width: 12px; height: 12px; }
 .add-step:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
+.step-add-step { width: 100%; margin: 0 0 12px; padding: 10px 8px; }   /* bottom of the Step tab */
 .add-section { width: 100%; margin: 0 0 12px; padding: 10px 8px; background: var(--surface); }
 
 .add-section.first { background: var(--accent); border: 1px solid var(--accent); color: var(--on-accent); font-weight: 600; }
@@ -438,12 +462,9 @@ ul.list li { padding: 6px 10px; gap: 10px; }
 @container (max-width: 330px) {
   .ex-row { gap: 3px; }
   .ex-row .name { min-width: 36px; }
-  .ex-row select.ex-axis { width: 50px; }
-  .ex-row .dist-input { width: 40px; }
   .ex-row .grip { width: 14px; }
 }
 @container (max-width: 280px) {
-  .ex-row .trail-toggle, .ex-row [data-act="exExpand"] { display: none; }   /* (still in the move's editor) */
   .context-row { flex-wrap: wrap; }
 }
 @media (max-width: 300px) {
@@ -466,3 +487,7 @@ ul.list li { padding: 6px 10px; gap: 10px; }
   .sec-picture .thumb.big { width: 100%; max-width: none; }
   .sec-pic-side { width: 100%; }
 }
+
+/* Card header tools shown only while the card is folded (View & image) */
+.card:not(.collapsed) .card-tools.folded-only { display: none; }
+.card-tools.folded-only .icon-btn:disabled { opacity: .35; cursor: default; }

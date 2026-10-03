@@ -186,6 +186,20 @@ class ExplodeMoveTests(unittest.TestCase):
         self.assertEqual(by_id["Roller:2"], (0.0, 0.0, 1.0))   # now lowest -> moves least
         self.assertEqual(by_id["Roller:1"], (0.0, 0.0, 2.0))
 
+    def test_stacked_by_position_level_parts_move_together(self):
+        self.centers["Roller:2"] = (4.0, 0.0, 1.004)               # level with Roller:1 along Z
+        stack = self.add("+Z", parts=("Roller:1", "Roller:2", "Bolt:1"), spacing=model.STACKED, distance=1.0)
+        moves = self.run_moves()
+        got = {p: moves[p][0][0][2] for p in ("Roller:1", "Roller:2", "Bolt:1")}
+        self.assertEqual(got, {"Bolt:1": 1.0, "Roller:1": 2.0, "Roller:2": 2.0})
+
+    def test_stacked_reversed_moves_the_far_end_least(self):
+        self.centers["Roller:2"] = (4.0, 0.0, 1.004)               # level with Roller:1 along Z
+        self.add("+Z", parts=("Roller:1", "Roller:2", "Bolt:1"), spacing=model.STACKED_REVERSE, distance=1.0)
+        moves = self.run_moves()
+        got = {p: moves[p][0][0][2] for p in ("Roller:1", "Roller:2", "Bolt:1")}
+        self.assertEqual(got, {"Bolt:1": 2.0, "Roller:1": 1.0, "Roller:2": 1.0})
+
     def test_stacked_in_pick_order(self):
         self.add("+Y", spacing=model.STACKED_SELECTION, distance=2.0)
         moves = self.run_moves()
@@ -288,6 +302,12 @@ class ExplodeTests(unittest.TestCase):
     def test_stacked_selection_order(self):
         self.assertEqual(explode.distances(explode.STACKED_SELECTION, 3, 1.5), [1.5, 3.0, 4.5])
 
+    def test_stacked_level_parts_share_a_tier(self):
+        # Two screws level with each other (same Z), a washer below them: washer 1x, screws 2x.
+        centers = [(0, 0, 5.0), (3, 0, 5.004), (0, 0, 2.0)]
+        self.assertEqual(explode.distances(explode.STACKED, 3, 1.0, centers, (0, 0, 1)), [2.0, 2.0, 1.0])
+        self.assertEqual(explode.distances(explode.STACKED, 3, -1.0, centers, (0, 0, 1)), [-1.0, -1.0, -2.0])
+
     def test_parent_space_round_trip(self):
         # Parent rotated 90 degrees about Z.
         axes = ((0, 1, 0), (-1, 0, 0), (0, 0, 1))
@@ -319,6 +339,16 @@ class SplitBodyTests(unittest.TestCase):
         self.assertEqual(model.leaf_state(m, base["id"], "Gripper:1+#Base"), model.CURRENT)
         self.assertEqual(model.leaf_state(m, base["id"], "Gripper:1+#Cover1"), model.LATER)
         self.assertEqual(model.leaf_state(m, covers["id"], "Gripper:1+#Base"), model.EARLIER)
+
+    def test_prep_step_parts_stay_unassigned(self):
+        m, a, b, c = build()
+        a["prep"] = True
+        covered = model.covered_paths(m)
+        self.assertFalse(model.is_covered(covered, "Base:1"))       # only prepared so far
+        self.assertTrue(model.is_covered(covered, "Roller:1"))
+        self.assertEqual(model.prepared_in(m), {"Base:1": "Base"})
+        model.add_items(c, [ref("Base:1")])                          # installed in a normal step
+        self.assertTrue(model.is_covered(model.covered_paths(m), "Base:1"))
 
     def test_whole_component_item_covers_its_bodies(self):
         m = model.new_manual()

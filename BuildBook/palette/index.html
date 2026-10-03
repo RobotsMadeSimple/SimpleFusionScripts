@@ -86,64 +86,72 @@
         <div class="card-head">
           <h3 data-icon="parts" data-info="Right-click a part for its options. Tick parts for actions on several at once.">Parts <span id="itemCount" class="count"></span></h3>
           <div class="card-tools">
-            <button id="btnPick" class="btn small" data-icon="pick" title="Pick this step's parts on the full model: click selects, hover + H hides">Pick</button>
-            <button id="btnLines" class="btn small" data-icon="lines" title="Edit trail lines: click a line to hide or show it">Lines</button>
+            <button id="btnPick" class="btn small" data-icon="pick" title="Pick this step's parts on the full model: click selects, hover + H hides. Parts already selected in Fusion are added.">Pick</button>
           </div>
+        </div>
+        <!-- Actions for the ticked parts (greyed out until some are ticked; right-click a part for the same). -->
+        <div class="bulk-bar" id="bulkBar">
+          <button id="btnTrailOn" class="btn small" data-icon="trailOn" title="Trail lines on for the ticked parts, in every move">Trails on</button>
+          <button id="btnTrailOff" class="btn small" data-icon="trailOff" title="Trail lines off for the ticked parts, in every move">Trails off</button>
+          <button id="btnReset" class="btn small" data-icon="unexplode" title="Unexplode: take the ticked parts out of every explode move (they stay in the step)">Unexplode</button>
+          <button id="btnNoBom" class="btn small" data-icon="bomOff" title="Not counted for this step: left out of this step's parts in the step, section and full parts lists (e.g. a part brought back from an earlier step). Click again to count them.">Not in step BOM</button>
+          <button id="btnSplit" class="btn small" data-icon="split" title="Split into bodies / join again: a multi-body part's bodies become separate parts (every copy of that component follows)">Split / join</button>
+          <span class="spacer"></span>
+          <button id="btnRemove" class="btn small danger" data-icon="trash" title="Remove the ticked parts from this step">Remove</button>
         </div>
         <div class="items-head">
           <label class="check"><input type="checkbox" id="checkAll"> All</label>
           <span class="sub" id="checkedCount"></span>
         </div>
-        <!-- Shown while parts are ticked: actions for all of them (right-click a part for the same). -->
-        <div class="bulk-bar hidden" id="bulkBar">
-          <button id="btnTrailOn" class="btn small icon-only" data-icon="lines" title="Trail lines on for the ticked parts, in every move"></button>
-          <button id="btnTrailOff" class="btn small icon-only" data-icon="linesOff" title="Trail lines off for the ticked parts, in every move"></button>
-          <button id="btnReset" class="btn small icon-only" data-icon="unexplode" title="Unexplode: take the ticked parts out of every explode move (they stay in the step)"></button>
-          <button id="btnNoBom" class="btn small" data-icon="bomOff" title="Not counted in the section and full parts lists (e.g. brought in again from an earlier step); click again to count them">Not in BOM</button>
-          <button id="btnSplit" class="btn small icon-only" data-icon="split" title="Split into bodies / join again: a multi-body part's bodies become separate parts (every copy of that component follows)"></button>
-          <span class="spacer"></span>
-          <button id="btnRemove" class="btn small danger icon-only" data-icon="trash" title="Remove the ticked parts from this step"></button>
-        </div>
         <ul id="items" class="list" title="Right-click a part for its options"></ul>
-        <div class="items-foot">
-          <button id="btnAddSelected" class="btn small" data-icon="plus" title="Add the parts currently selected in the canvas or browser">Add Fusion selection</button>
-        </div>
         <div class="ctx-menu hidden" id="itemMenu"></div>
       </section>
 
       <!-- Explode moves -->
       <section class="card">
         <div class="card-head">
-          <h3 data-icon="explode" data-info="Moves run top to bottom; a part in several moves continues from where it landed. Click a move to see the step up to it. A blank distance uses the default in Settings.">Explode moves <span id="exCount" class="count"></span></h3>
+          <h3 data-icon="explode" data-info="Moves run top to bottom; a part in several moves continues from where it landed. Click a move to edit it (name, parts, direction, distance, spacing).">Explode moves <span id="exCount" class="count"></span></h3>
           <div class="card-tools">
-            <button id="btnShowAll" class="btn link hidden" title="Show the step with every move again">Show all</button>
-            <button id="btnAddExplode" class="btn primary small" data-icon="plus" title="New move with the checked parts, or the Fusion selection. Goes after the move you're viewing.">Move</button>
+            <button id="btnLines" class="btn small" data-icon="lines" title="Edit trail lines: click a line to hide or show it">Lines</button>
+            <button id="btnAddExplode" class="btn primary small" data-icon="plus" title="New move with the checked parts, or the Fusion selection. Goes after the last move.">Move</button>
           </div>
         </div>
         <ul id="explodes" class="explodes"></ul>
-        <div class="context-row">
-          <span class="ctx-label" data-icon="eye" title="How parts from other steps show in this step's view"></span>
-          <label for="ctxEarlier">Earlier</label><select id="ctxEarlier" title="How parts installed in earlier steps show in this step's view"></select>
-          <label for="ctxLater">Later</label><select id="ctxLater" title="How parts installed in later steps show in this step's view"></select>
-        </div>
         <!-- The default explode distance lives in Settings; a step that still has its own (from before)
              says so here, with a way back to the global one. -->
         <p class="hint hidden" id="stepDistanceNote"></p>
+      </section>
+
+      <!-- Other steps' parts: how they show in this step's view -->
+      <section class="card">
+        <div class="card-head">
+          <h3 data-icon="eye" data-info="How parts from the other steps show in this step's view and picture.">Other steps <span id="ctxSum" class="fold-sum"></span></h3>
+        </div>
+        <div class="context-grid">
+          <label for="ctxEarlier">Earlier steps' parts</label>
+          <select id="ctxEarlier" title="How parts installed in earlier steps show in this step's view"></select>
+          <label for="ctxLater">Later steps' parts</label>
+          <select id="ctxLater" title="How parts installed in later steps show in this step's view"></select>
+        </div>
       </section>
 
       <!-- View & image -->
       <section class="card">
         <div class="card-head">
           <h3 data-icon="camera">View &amp; image <span id="viewSum" class="fold-sum"></span></h3>
-          <div class="card-tools">
-            <button id="btnSaveView" class="btn small" data-icon="camera" title="Save the current camera as this step's view; opening the step goes there">Save view</button>
-            <button id="btnAnnotate" class="btn small" data-icon="pen" title="Draw arrows, lines, circles, boxes, text and numbered callouts on this step's picture">Annotate</button>
+          <!-- Shown only while the card is folded: the three view actions as icons. -->
+          <div class="card-tools folded-only">
+            <button id="hdrSaveView" class="icon-btn" data-icon="camera" title="Save view"></button>
+            <button id="hdrGoView" class="icon-btn" data-icon="target" title="Go to view"></button>
+            <button id="hdrAnnotate" class="icon-btn" data-icon="pen" title="Annotate"></button>
           </div>
         </div>
         <div class="view-row">
           <div class="thumb big" id="stepThumb"></div>
           <div class="view-actions">
+            <button id="btnSaveView" class="btn" data-icon="camera" title="Save the current camera as this step's view; opening the step goes there">Save view</button>
             <button id="btnGoView" class="btn" data-icon="target" title="Go back to this step's saved view">Go to view</button>
+            <button id="btnAnnotate" class="btn" data-icon="pen" title="Draw arrows, lines, circles, boxes, text and numbered callouts on this step's picture">Annotate</button>
             <button id="btnExportStep" class="btn primary" data-icon="download" title="Save this step as a PNG in the export folder">Export PNG</button>
           </div>
         </div>
@@ -156,12 +164,17 @@
         <div id="stepBom"></div>
       </section>
 
+      <!-- Same dashed row as under each section in the Steps tab -->
+      <button id="btnStepAddStep" class="add-step step-add-step"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg><span>Add step</span></button>
+
     </div>
   </main>
 
   <!-- ============================================================ Parts (unassigned) -->
   <main class="pane" data-pane="parts">
     <div class="pane-bar">
+      <label class="check" title="Tick every part shown (just the filter's matches while filtering); again to untick them">
+        <input type="checkbox" id="tickAllUnassigned"> All</label>
       <input id="unassignedFilter" class="grow" type="search" placeholder="Filter parts not in a step">
       <span class="hint-key" data-icon="info" title="Parts not in any step yet. Tick an assembly to add it whole, or open it (the arrow) to add its parts one by one."></span>
       <button id="btnAddChecked" class="btn primary small" data-icon="plus">Add to step</button>
@@ -232,7 +245,7 @@
     <section class="card">
       <div class="card-head"><h3 data-icon="lines">Trail lines</h3></div>
       <div class="grid three">
-        <div><label for="setTrailColor">Colour</label><input id="setTrailColor" type="color"></div>
+        <div><label for="setTrailColor">Color</label><input id="setTrailColor" type="color"></div>
         <div><label for="setTrailWeight">Weight</label><input id="setTrailWeight" type="number" min="0.5" max="6" step="0.5"></div>
         <div><label for="setTrailStyle">Style</label>
           <select id="setTrailStyle">
@@ -243,10 +256,20 @@
       </div>
     </section>
     <section class="card">
+      <div class="card-head"><h3 data-icon="star" data-info="Your own starting settings, kept on this computer for every design: step views, explode distance, trail lines, annotation style, and the Export tab's image and folder options.">My defaults</h3></div>
+      <div class="actions-row">
+        <button id="btnSaveDefaults" class="btn" data-icon="star" title="Keep this manual's settings (here and on the Export tab) as your defaults: new manuals start with them">Save as my defaults</button>
+        <button id="btnUseDefaults" class="btn" data-icon="download" title="Set this manual's settings to your defaults">Use mine here</button>
+        <button id="btnClearDefaults" class="btn link" title="Forget your defaults: new manuals start with BuildBook's">Clear</button>
+      </div>
+      <p class="hint" id="defaultsHint"></p>
+    </section>
+    <section class="card">
       <div class="card-head"><h3 data-icon="book">Manual</h3></div>
       <div class="actions-row">
         <button id="btnExportManual" class="btn" data-icon="download" title="Save this manual (sections, steps, explodes, views, settings) to a .json file">Export</button>
         <button id="btnImportManual" class="btn" data-icon="upload" title="Replace this design's manual with one from a .json file, e.g. onto an older version">Import</button>
+        <button id="btnDeleteManual" class="btn danger" data-icon="trash" title="Delete this design's build book (sections, steps, moves, views, settings) and start fresh. The model isn't touched. Ctrl+Z in the panel brings it back.">Delete</button>
         <button id="btnLeftovers" class="btn" data-icon="broom" title="Delete stray exploded/ghost graphics left in the canvas. Never touches the model.">Clean up graphics</button>
       </div>
     </section>

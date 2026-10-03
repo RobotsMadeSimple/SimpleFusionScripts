@@ -18,11 +18,24 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
-from .lib import capture, crop, explode, hardware, log, manual_pdf, model, partthumbs, paths, pictures, refs
-from .lib.overlay import CropOverlay
-from .lib import scene as scene_mod
-from .lib.scene import Scene
+from .lib import log, paths
+
+# Everything else loads the first time BuildBook is opened (_load_modules): Fusion loads every
+# add-in at start-up, and Autodesk asks for run() to take under 5 ms and only hook up the button.
+anchor_cmd = explode_cmd = lines_cmd = pick_cmd = None
+capture = crop = explode = hardware = hidden_record = userprefs = manual_pdf = model = None
+partthumbs = pictures = refs = scene_mod = Scene = CropOverlay = None
+
+
+def _load_modules():
+    global anchor_cmd, explode_cmd, lines_cmd, pick_cmd, capture, crop, explode, hardware
+    global hidden_record, userprefs, manual_pdf, model, partthumbs, pictures, refs, scene_mod, Scene, CropOverlay
+    from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
+    from .lib import (capture, crop, explode, hardware, hidden_record, userprefs, manual_pdf, model,
+                      partthumbs, pictures, refs)
+    from .lib import scene as scene_mod
+    from .lib.overlay import CropOverlay
+    from .lib.scene import Scene
 
 PALETTE_ID = "buildBookPalette"
 PALETTE_NAME = "BuildBook"
@@ -36,6 +49,8 @@ _handlers = []
 _events = []          # (event, handler) pairs, for reload_addin
 _ctrl = None
 
+
+UNDO_LIMIT = 30              # deletions Ctrl+Z can take back
 
 class Controller:
     def __init__(self, app):
@@ -54,6 +69,7 @@ class Controller:
         self.picture_view = False   # a section / cover picture is on screen (Go to view): frame it too
         self._resume_step = None
         self._notice = None
+        self.undo_stack = []        # [(manual JSON before, what was done)]: Ctrl+Z in the panel
 
     # ------------------------------------------------------------ design + storage
 
@@ -200,11 +216,12 @@ class Controller:
                     own = part.get("distance") is not None
                     parts.append({
                         "path": path,
-                        "name": refs.display_name(index.get(path), part["ref"].get("name", path), short),
+                        "name": refs.display_name(index.get(path), refs.live_name(index.get(path), part["ref"]), short),
                         "distance": shown(part["distance"]) if own else None,
                         "own": own,
                         "trail": part.get("trail", True),
                         "missing": path in missing_paths,
+                        "thumb": partthumbs.thumb_key(index.get(path)),
                     })
                 trails = [p["trail"] for p in parts]
                 kind = ex["direction"].get("kind", model.DIR_AXIS)
@@ -214,8 +231,11 @@ class Controller:
                     "name": ex.get("name", ""),
                     "label": model.explode_label(step, ex),
                     "direction": model.direction_label(ex["direction"]),
-                    "axis": model.direction_label(ex["direction"]) if kind == model.DIR_AXIS else kind,
-                    "distance": shown(model.explode_distance(manual, step, ex)),
+                    "axis": model.axis_letter(ex["direction"]) if kind == model.DIR_AXIS else kind,
+                    "kind": kind,
+                    # minus = the other way along the axis (shown as a negative distance)
+                    "distance": shown(model.explode_distance(manual, step, ex))
+                    * (-1 if model.is_negative(ex["direction"]) else 1),
                     "own": kind == model.DIR_XYZ or ex.get("distance") is not None,
                     "spacing": ex.get("spacing", model.UNIFORM),
                     "trail": "all" if trails and all(trails) else "some" if any(trails) else "none",
@@ -227,12 +247,13 @@ class Controller:
                 occ = index.get(path)
                 items.append({
                     "path": path,
-                    "name": refs.display_name(occ, item["ref"].get("name", path), short),
+                    "name": refs.display_name(occ, refs.live_name(occ, item["ref"]), short),
                     "component": occ.component.name if occ else "",
                     "moves": numbers.get(path, []),
                     "anchor": bool(item.get("anchor")),
                     "bom": item.get("bom", True) is not False,
                     "missing": path in missing_paths,
+                    "split": _split_kind(occ),
                 })
                 items[-1]["thumb"] = partthumbs.thumb_key(occ)
                 items[-1]["bomKey"], items[-1]["bomName"], items[-1]["hw"] = refs.bom_line(
@@ -264,6 +285,7 @@ class Controller:
             "missing": missing,
             "units": length_units,
             "manualDefault": shown(manual["settings"]["defaultDistance"]),
+            "myDefaults": userprefs.exists(),
             "exportFolder": capture.export_folder(manual),
             "thumbs": capture.thumbnail_urls(self.app, manual),
             "ratios": [[key, label] for key, label, _ in crop.RATIOS],
@@ -273,6 +295,23 @@ class Controller:
     def _timed(self, label, fn, *args):
         with log.timed(label):
             return fn(*args)
+
+    def send_selection(self, ours=False):
+        """Tell the panel which parts are selected in Fusion (it highlights them in the Parts
+        tab; `ours`: the panel's own selection, which mustn't untick anything). Not while one of
+        our dialogs is open: those select things of their own."""
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        if palette is None or not palette.isVisible or getattr(self, "_selecting", False):
+            return
+        try:
+            active = self.ui.activeCommand or ""
+            if active.startswith("buildBook") and active != COMMAND_ID:
+                return
+        except Exception:
+            pass
+        paths = [o.fullPathName for o in refs.selected_occurrences(self.ui)]
+        log.info("fusion selection: {} part(s){}".format(len(paths), " (ours)" if ours else ""))
+        palette.sendInfoToHTML("selection", json.dumps({"paths": paths, "ours": ours}))
 
     def push_state(self):
         palette = self.ui.palettes.itemById(PALETTE_ID)
@@ -303,12 +342,75 @@ class Controller:
 
     # ------------------------------------------------------------ palette actions
 
+    def undo_label(self, manual, step, action, data):
+        """What a deleting action is about to do, in words (for the undo notice), or None for
+        actions that aren't undoable."""
+        if action == "deleteSection":
+            sec = model.find_section(manual, data.get("id"))
+            return "deleted section “{}”".format(sec["title"]) if sec else None
+        if action == "deleteStep":
+            _, target = model.find_step(manual, data.get("id"))
+            return "deleted step “{}”".format(target["title"]) if target else None
+        if step is None:
+            return None
+        if action == "removeItems":
+            n = len(data.get("paths") or [])
+            return "removed {} part{} from the step".format(n, "" if n == 1 else "s") if n else None
+        if action == "deleteExplode":
+            ex = model.find_explode(step, data.get("id"))
+            return "deleted move “{}”".format(model.explode_label(step, ex)) if ex else None
+        if action == "removeExplodePart":
+            return "took a part out of a move"
+        if action == "resetOffsets":
+            return "unexploded parts"
+        return None
+
+    def delete_manual(self, manual):
+        """Start fresh: the design's manual goes (Ctrl+Z in the panel brings it back), so the next
+        one starts from the user's defaults. The model is never touched."""
+        self.undo_stack = (self.undo_stack + [(model.to_json(manual), "deleted the build book")])[-UNDO_LIMIT:]
+        self.close_view()
+        design = self.design()
+        attr = design.attributes.itemByName(ATTR_GROUP, ATTR_NAME) if design is not None else None
+        if attr is not None:
+            attr.deleteMe()
+        log.info("deleted the build book")
+        self.notify("Build book deleted: starting fresh. Ctrl+Z to undo.")
+        self.push_state()
+
+    def undo(self):
+        if not self.undo_stack:
+            self.notify("Nothing to undo.")
+            self.push_state()
+            return
+        before, what = self.undo_stack.pop()
+        manual = model.from_json(before)
+        self.save(manual)
+        log.info("undo: " + what)
+        self.notify("Undone: {}.".format(what))
+        _, step = model.find_step(manual, self.scene.step_id) if self.scene.active else (None, None)
+        if step is not None:
+            self.show_step(step["id"])
+        else:
+            self.push_state()
+
     def handle(self, action, data):
+        if action == "undo":
+            self.undo()
+            return
+        if action == "deleteManual":
+            self.delete_manual(self.load())
+            return
         manual = self.load()
         step_id = data.get("stepId") or self.scene.step_id
         _, step = model.find_step(manual, step_id)
         rerender = False
         dirty = True
+        what = self.undo_label(manual, step, action, data)
+        if what:
+            # Kept before the change; Ctrl+Z in the panel puts it back.
+            self.undo_stack = (self.undo_stack + [(model.to_json(manual), what)])[-UNDO_LIMIT:]
+            self.notify("{}. Ctrl+Z to undo.".format(what[0].upper() + what[1:]))
 
         if action in ("ready", "refresh"):
             if action == "refresh":
@@ -334,7 +436,7 @@ class Controller:
             model.move_section(manual, data["id"], int(data.get("delta", 0)))
             rerender = self.scene.active
         elif action == "addStep":
-            new = model.add_step(manual, data["sectionId"], data.get("title"))
+            new = model.add_step(manual, data["sectionId"], data.get("title"), after=data.get("after"))
             if new:
                 self.save(manual)
                 self.show_step(new["id"])
@@ -387,6 +489,9 @@ class Controller:
             return
         elif action == "refreshThumbs":
             self._refresh_thumbnails(manual)
+            return
+        elif action == "jsError":
+            log.info("panel script error: {} ({}:{})".format(data.get("message"), data.get("source"), data.get("line")))
             return
         elif action == "reloadAddin":
             # Not from here: this runs inside the panel's own event, and reloading deletes the panel.
@@ -549,7 +654,8 @@ class Controller:
         elif action == "checkItems":
             # Checked parts: select what Fusion can select, highlight the exploded copies.
             self.checked = list(data.get("paths", []))
-            self._select(self.checked)
+            if not data.get("keepSelection"):   # (unticked because the user selected something else)
+                self._select(self.checked)
             self.scene.set_highlight(self.checked)
             self.app.activeViewport.refresh()
             return
@@ -576,6 +682,16 @@ class Controller:
             if model.find_explode(step, data.get("id")):
                 self.explode.launch(step["id"], data["id"])
             return
+        elif action == "hoverExplode":
+            # The cursor on a move's row: the step as it stands just after that move (id None:
+            # every move again). Only the canvas changes; the panel keeps its own hover look.
+            if step is not None and self.scene.active and not self.scene.edit and step["id"] == self.scene.step_id:
+                upto = data.get("id") if model.find_explode(step, data.get("id")) else None
+                if upto != self.scene.upto:
+                    self.scene.show(self.design(), manual, step["id"], upto=upto)
+                    self.scene.set_highlight(self.checked)
+                    self.app.activeViewport.refresh()
+            return
         elif action == "scrubExplode" and step:
             upto = data.get("id")
             self.show_step(step["id"], upto=None if upto == self.scene.upto else upto)
@@ -587,6 +703,23 @@ class Controller:
         elif action == "setSettings":
             _deep_update(manual["settings"], data.get("settings", {}))
             rerender = self.scene.active
+        elif action == "saveMyDefaults":
+            userprefs.save(manual["settings"])
+            self.notify("Saved as your defaults: new manuals start with these settings.")
+            dirty = False
+        elif action == "useMyDefaults":
+            if not userprefs.exists():
+                return
+            defaults = model.default_settings()
+            for key in model.USER_DEFAULT_KEYS:
+                if key in defaults:
+                    manual["settings"][key] = defaults[key]
+            self.notify("This manual now uses your defaults.")
+            rerender = self.scene.active
+        elif action == "clearMyDefaults":
+            userprefs.clear()
+            self.notify("Your defaults are cleared: new manuals start with BuildBook's.")
+            dirty = False
         else:
             dirty = False
 
@@ -992,10 +1125,12 @@ class Controller:
                 index = explodes.index(ex) if ex in explodes else len(explodes)
             explodes.insert(max(0, min(index, len(explodes))), ex)
         elif action == "setAxisExplode":
-            axis = data.get("axis")
-            if axis not in model.AXIS_VECTORS:
+            axis = data.get("axis") or ""
+            letter = axis[-1:].upper()
+            if letter not in ("X", "Y", "Z"):
                 return False
-            ex["direction"] = model.new_direction(axis)
+            negative = model.is_negative(ex["direction"]) if ex["direction"].get("kind") == model.DIR_AXIS else False
+            ex["direction"] = model.signed_direction(model.new_direction("+" + letter), negative)
         elif action == "setDistanceExplode":
             value = self._parse_length(data.get("value", ""))
             if value is False:
@@ -1006,7 +1141,11 @@ class Controller:
                 if value and length > 1e-9:
                     ex["direction"]["vector"] = [c * value / length for c in vec]
             else:
-                ex["distance"] = value          # None = follow the step default
+                # A negative distance points the other way (flip); blank = follow the step default.
+                if value is not None:
+                    ex["direction"] = model.signed_direction(ex["direction"], value < 0)
+                    value = abs(value)
+                ex["distance"] = value
         elif action == "setSpacingExplode":
             if data.get("spacing") not in model.SPACINGS:
                 return False
@@ -1070,15 +1209,22 @@ class Controller:
     def _select(self, paths):
         index = refs.path_index(self.design())
         sels = self.ui.activeSelections
-        sels.clear()
-        for p in paths:
-            occ = index.get(p)
-            if occ is None:
-                continue
-            try:
-                sels.add(occ.body if isinstance(occ, refs.BodyPart) else occ)   # a split part: its body
-            except Exception:
-                pass  # hidden parts (e.g. exploded copies) can't be selected
+        # Fusion reports every step (cleared, one part, two...); the panel would take those for
+        # the user clicking elsewhere. Quiet while selecting, then report the result once.
+        self._selecting = True
+        try:
+            sels.clear()
+            for p in paths:
+                occ = index.get(p)
+                if occ is None:
+                    continue
+                try:
+                    sels.add(occ.body if isinstance(occ, refs.BodyPart) else occ)   # a split part: its body
+                except Exception:
+                    pass  # hidden parts (e.g. exploded copies) can't be selected
+        finally:
+            self._selecting = False
+        self.send_selection(ours=True)
 
     # ------------------------------------------------------------ document events
 
@@ -1098,10 +1244,14 @@ class Controller:
             self.show_step(step_id)
 
     def on_document_switch(self):
+        self.undo_stack = []                # (undo is per design)
         refs.forget_document()          # (hardware labels are per component: kept)
         self.crop_overlay.clear()
         self.scene.clear()
         self.scene.flush_cache()
+        design = self.design()
+        if design is not None:
+            hidden_record.recover(design)       # parts a crash left switched off
         self.push_state()
 
     def remove_leftovers(self):
@@ -1159,6 +1309,7 @@ class PaletteHTMLHandler(adsk.core.HTMLEventHandler):
 class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
         try:
+            _start()                    # (first use: everything else loads now)
             ui = _ctrl.ui
             palette = ui.palettes.itemById(PALETTE_ID)
             new = not palette
@@ -1174,7 +1325,7 @@ class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
             _ctrl.push_state()          # (nothing is pushed while it's hidden)
         except Exception:
             log.error("show palette")
-            _ctrl.ui.messageBox("BuildBook failed:\n{}".format(traceback.format_exc()))
+            adsk.core.Application.get().userInterface.messageBox("BuildBook failed:\n{}".format(traceback.format_exc()))
 
 
 class CameraChangedHandler(adsk.core.CameraEventHandler):
@@ -1227,12 +1378,22 @@ def reload_addin():
     ui = app.userInterface
     try:
         log.info("reloading BuildBook")
+        try:
+            active = ui.activeCommand or ""
+            if active.startswith("buildBook"):
+                log.info("reload: closing the open {} dialog first".format(active))
+                ui.terminateActiveCommand()
+        except Exception:
+            log.error("reload: close the open dialog")
         stop(None)
         _detach_events()
         package = log.__name__.rpartition(".lib.")[0]      # however Fusion named the add-in's package
         # Submodules first (reloaded in place, so "from . import x" references stay good), then
         # this module, whose "from .lib.x import Name" lines pick up the new classes.
-        for name in sorted(n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__):
+        # lib/ first: commands read its constants when they load (alphabetical put commands first,
+        # so a new constant in lib/model.py wasn't there yet for commands/explode_cmd.py).
+        mine = [n for n in list(sys.modules) if n.startswith(package + ".") and n != __name__]
+        for name in sorted(mine, key=lambda n: (".lib." not in n + ".", n)):
             module = sys.modules.get(name)
             if module is not None:
                 importlib.reload(module)
@@ -1263,6 +1424,45 @@ class FillLabelsHandler(adsk.core.CustomEventHandler):
             _ctrl.fill_labels()
         except Exception:
             log.error("fill labels")
+
+
+def _split_kind(occ):
+    """For the panel's Split / join action: "join" for a part already split into its bodies,
+    "split" for a part with several bodies, else None (one body, or an assembly: nothing to do)."""
+    try:
+        base = occ.occ if isinstance(occ, refs.BodyPart) else occ
+        if base is None:
+            return None
+        if refs.is_split(base):
+            return "join"
+        return "split" if base.bRepBodies.count >= 2 else None
+    except Exception:
+        return None
+
+
+class SelectionChangedHandler(adsk.core.ActiveSelectionEventHandler):
+    def notify(self, args):
+        try:
+            _ctrl.send_selection()
+        except Exception:
+            log.error("selection changed")
+
+
+class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
+    """After a Fusion command that can change the model (rebuild, getting the latest version of a
+    referenced part, renaming...), refresh the panel: part names, missing parts."""
+    SKIP = ("SelectCommand", "CommitCommand", "PanCommand", "OrbitCommand", "ZoomCommand")
+
+    def notify(self, args):
+        try:
+            cmd = adsk.core.ApplicationCommandEventArgs.cast(args).commandId or ""
+            if cmd.startswith("buildBook") or cmd in self.SKIP or _ctrl is None:
+                return
+            log.info("after Fusion command {}: refreshing the panel".format(cmd))
+            refs.forget_missing()           # parts found again after an update show again
+            _ctrl.push_state()
+        except Exception:
+            log.error("command terminated")
 
 
 class DocSwitchHandler(adsk.core.DocumentEventHandler):
@@ -1348,21 +1548,13 @@ def _release():
 
 
 def run(context):
-    global _ctrl
+    """Fusion start-up: only the toolbar button (fast: Fusion waits for every add-in's run()).
+    The rest starts the first time the button is used (_start)."""
     if not _claim():
         return
     app = adsk.core.Application.get()
     ui = app.userInterface
     try:
-        _ctrl = Controller(app)
-        log.info("BuildBook starting")
-        try:
-            moved = paths.migrate_old_files()       # thumbnails / label cache from older versions
-            if moved:
-                log.info("copied {} file(s) from the add-in folder to {}".format(moved, paths.data_dir()))
-        except Exception:
-            log.error("copy older files")
-
         cmd_def = ui.commandDefinitions.itemById(COMMAND_ID)
         if not cmd_def:
             cmd_def = ui.commandDefinitions.addButtonDefinition(
@@ -1370,42 +1562,69 @@ def run(context):
                 "annotated pictures, parts lists and a PDF",
                 os.path.join(paths.ADDIN_DIR, "resources", "BuildBook"))
         _add(cmd_def.commandCreated, ShowPaletteHandler())
-
-        _ctrl.explode.register(ui)
-        _ctrl.picker.register(ui)
-        _ctrl.lines.register(ui)
-        _ctrl.anchor.register(ui)
-        _add(app.cameraChanged, CameraChangedHandler())
-
-        design = adsk.fusion.Design.cast(app.activeProduct)
-        if design is not None:
-            scene_mod.sweep(design)
-
         panel = ui.allToolbarPanels.itemById("SolidScriptsAddinsPanel")
         if panel and not panel.controls.itemById(COMMAND_ID):
             panel.controls.addCommand(cmd_def)
-
-        _add(app.documentSaving, DocSavingHandler())
-        _add(app.documentSaved, DocSavedHandler())
-        _add(app.documentActivated, DocSwitchHandler())
-        try:
-            app.unregisterCustomEvent(FILL_EVENT)
-        except Exception:
-            pass
-        _add(app.registerCustomEvent(FILL_EVENT), FillLabelsHandler())
-        try:
-            app.unregisterCustomEvent(RELOAD_EVENT)
-        except Exception:
-            pass
-        _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
-        _add(app.documentOpened, DocSwitchHandler())
-        _add(app.documentDeactivating, DocDeactivatingHandler())
     except Exception:
         log.error("run")
         ui.messageBox("BuildBook failed to start:\n{}".format(traceback.format_exc()))
 
 
+def _start():
+    """First use: load the add-in's code, register its dialogs and events, tidy the open design."""
+    global _ctrl
+    if _ctrl is not None:
+        return
+    t0 = time.perf_counter()
+    app = adsk.core.Application.get()
+    ui = app.userInterface
+    _load_modules()
+    try:
+        userprefs.load()                # the user's own default settings
+    except Exception:
+        log.error("load my defaults")
+    _ctrl = Controller(app)
+    log.info("BuildBook starting")
+    try:
+        moved = paths.migrate_old_files()       # thumbnails / label cache from older versions
+        if moved:
+            log.info("copied {} file(s) from the add-in folder to {}".format(moved, paths.data_dir()))
+    except Exception:
+        log.error("copy older files")
+
+    _ctrl.explode.register(ui)
+    _ctrl.picker.register(ui)
+    _ctrl.lines.register(ui)
+    _ctrl.anchor.register(ui)
+    _add(app.cameraChanged, CameraChangedHandler())
+
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if design is not None:
+        scene_mod.sweep(design)
+        hidden_record.recover(design)       # parts a crash left switched off
+
+    _add(app.documentSaving, DocSavingHandler())
+    _add(app.documentSaved, DocSavedHandler())
+    _add(app.documentActivated, DocSwitchHandler())
+    _add(ui.activeSelectionChanged, SelectionChangedHandler())
+    _add(ui.commandTerminated, CommandTerminatedHandler())
+    try:
+        app.unregisterCustomEvent(FILL_EVENT)
+    except Exception:
+        pass
+    _add(app.registerCustomEvent(FILL_EVENT), FillLabelsHandler())
+    try:
+        app.unregisterCustomEvent(RELOAD_EVENT)
+    except Exception:
+        pass
+    _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
+    _add(app.documentOpened, DocSwitchHandler())
+    _add(app.documentDeactivating, DocDeactivatingHandler())
+    log.info("BuildBook started in {:.0f} ms".format((time.perf_counter() - t0) * 1000))
+
+
 def stop(context):
+    global _ctrl
     if not _mine():
         return
     _release()                  # (a reload claims it again in run)
@@ -1439,6 +1658,7 @@ def stop(context):
         if cmd_def:
             cmd_def.deleteMe()
         log.info("BuildBook stopped")
+        _ctrl = None                    # (run() then a first open starts it fresh)
     except Exception:
         log.error("stop")
         ui.messageBox("BuildBook failed to stop:\n{}".format(traceback.format_exc()))

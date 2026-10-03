@@ -1,7 +1,7 @@
 """Where BuildBook keeps its own files, and opening files the way the OS does.
 
 BuildBook's working files (log, hardware-label cache, step thumbnails) live in a per-user
-folder, not in the add-in's folder, which an installer (e.g. the Autodesk App Store) may
+folder, not in the add-in's folder, which an installer may
 replace on update:
 
     Windows  %APPDATA%\\RobotsMadeSimple\\BuildBook

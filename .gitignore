@@ -17,5 +17,3 @@ HoleThreadCallouts/thumbs/
 Thumbs.db
 .DS_Store
 
-# Store packages (python store/build_bundle.py <add-in>)
-dist/

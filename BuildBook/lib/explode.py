@@ -49,13 +49,17 @@ def is_zero(a, tol=1e-9):
     return length(a) < tol
 
 
+LEVEL_TOL = 0.01                # cm: parts this close along the direction count as level (one tier)
+
+
 def distances(mode, count, distance, centers=None, direction=None):
     """Per-part explode distance along the direction, in input order.
 
     UNIFORM: every part moves `distance`.
     STACKED: parts are ordered by their position along `direction` and moved
         distance, 2*distance, ... so the nearest part moves least and nothing
-        crosses over.
+        crosses over. Parts level with each other along the direction (within
+        LEVEL_TOL, e.g. a row of screws) share a tier and move the same distance.
     STACKED_SELECTION: same spacing, in the order the parts were given.
     """
     if count <= 0:
@@ -63,13 +67,18 @@ def distances(mode, count, distance, centers=None, direction=None):
     if mode == UNIFORM:
         return [distance] * count
     if mode == STACKED and centers is not None and direction is not None:
-        order = sorted(range(count), key=lambda i: dot(centers[i], direction))
+        pos = [dot(centers[i], direction) for i in range(count)]
+        order = sorted(range(count), key=lambda i: pos[i])
         # With a negative distance the far end of the stack moves least.
         if distance < 0:
             order.reverse()
         out = [0.0] * count
-        for rank, i in enumerate(order):
-            out[i] = distance * (rank + 1)
+        tier, tier_start = 0, None
+        for i in order:
+            if tier_start is None or abs(pos[i] - tier_start) > LEVEL_TOL:
+                tier += 1                   # a new level along the direction
+                tier_start = pos[i]
+            out[i] = distance * tier
         return out
     return [distance * (i + 1) for i in range(count)]
 

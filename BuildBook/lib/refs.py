@@ -261,6 +261,22 @@ def resolve_manual(design, manual):
     return index, missing, changed
 
 
+def live_name(occ, ref):
+    """A step part's name as the design has it now (renamed since it was added: the new name),
+    or the name saved with it when the part can't be found."""
+    try:
+        if occ is not None:
+            return occ.name
+    except Exception:
+        pass
+    return ref.get("name") or ref.get("path", "")
+
+
+def forget_missing():
+    """Look again for parts not found earlier (an update may have brought them back)."""
+    _missing_tokens.clear()
+
+
 def display_name(occ, fallback, short=True):
     if isinstance(occ, BodyPart):
         return occ.name                 # a split component's body: its own name
@@ -319,6 +335,7 @@ def unassigned(manual, index):
     split component) is a "group" row, followed by its parts not yet in a step; it can be added
     whole, or its parts one by one. "leaves" = its parts not in a step, "total" = all its parts."""
     covered = model.covered_paths(manual)
+    prepared = model.prepared_in(manual)
     short = manual["settings"].get("shortHardwareNames", True)
     kids = {}
     for path in index:
@@ -349,6 +366,9 @@ def unassigned(manual, index):
             return 0
         part = index[path]
         node = {"path": path, "name": name(path), "component": part.component.name, "depth": depth}
+        prep = [t for p, t in prepared.items() if model.is_self_or_ancestor(p, path)]
+        if prep:
+            node["prep"] = prep[0]           # only in a preparation step so far
         ch = kids.get(path)
         out.append(node)
         if not ch:
@@ -392,6 +412,37 @@ def pick_unit(occ, level, known=()):
     except Exception:
         unit = None
     return unit or occ
+
+
+def body_at(viewport, design, pos, accept=None):
+    """The visible body under a viewport position (Point2D, pixels), nearest along the view
+    ray, or None. For picking from mouse events without Fusion's selection. With `accept`
+    (body -> bool), hidden bodies are tested too and only accepted ones count."""
+    cam = viewport.camera
+    p = viewport.viewToModelSpace(adsk.core.Point2D.create(pos.x, pos.y))
+    if cam.cameraType == adsk.core.CameraTypes.OrthographicCameraType:
+        d = cam.eye.vectorTo(cam.target)
+        d.normalize()
+        back = d.copy()
+        back.scaleBy(-10000.0)
+        origin = p.copy()
+        origin.translateBy(back)
+    else:
+        origin, d = cam.eye, cam.eye.vectorTo(p)
+    hits = adsk.core.ObjectCollection.create()
+    found = design.rootComponent.findBRepUsingRay(
+        origin, d, adsk.fusion.BRepEntityTypes.BRepFaceEntityType, -1.0, accept is None, hits)
+    best, best_d = None, None
+    for i in range(found.count):
+        face = adsk.fusion.BRepFace.cast(found.item(i))
+        if face is None or i >= hits.count:
+            continue
+        if accept is not None and not accept(face.body):
+            continue
+        dist = origin.distanceTo(hits.item(i))
+        if best is None or dist < best_d:
+            best, best_d = face, dist
+    return best.body if best is not None else None
 
 
 def selected_occurrences(ui):

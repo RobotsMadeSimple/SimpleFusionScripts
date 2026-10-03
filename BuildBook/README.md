@@ -38,7 +38,7 @@ over it.
 - **Explode moves**: an ordered list per step, along an axis, X/Y/Z amounts or a picked
   edge / face / axis. Moves chain (slide out, then drop), with stacked spacing,
   per-part distances, trail lines and "show the step up to this move".
-- **Trail lines**: dashed lines from each part's home to where it's exploded; colour,
+- **Trail lines**: dashed lines from each part's home to where it's exploded; color,
   weight and style in Settings; click lines to hide them; a custom start point per part.
 - **Images**: a saved camera per step, a fixed crop ratio (4:3 by default) with an
   on-screen crop frame and centre ticks, PNG export of one or all steps.
@@ -51,7 +51,6 @@ over it.
 
 ## Install
 
-- **Autodesk App Store**: search for BuildBook (when it's listed).
 - **Installer**: see the [repository README](../README.md) for the one-line install
   on Windows and Mac.
 - **By hand**: copy this folder, then in Fusion **Utilities → Scripts and Add-Ins →
@@ -108,7 +107,7 @@ folder (not in the add-in folder, which an update may replace):
 They can contain your design's part names and pictures and never leave your computer.
 Deleting the folder is safe (thumbnails can be taken again from Settings).
 
-## Packaging for the App Store
+## Icons
 
-`python store/build_bundle.py BuildBook` (from the repository root) builds
-`dist/BuildBook.bundle` and an upload-ready zip; see `store/BuildBook/` for the listing.
+`python BuildBook/tools/make_icons.py` (needs Pillow) draws the toolbar and dialog icons in
+`resources/`.

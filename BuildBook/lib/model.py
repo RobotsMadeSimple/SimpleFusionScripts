@@ -20,6 +20,7 @@ distance and its own trail line. Directions are world vectors. Lengths are
 centimetres, Fusion's internal unit.
 """
 
+import copy
 import json
 import math
 import re
@@ -56,14 +57,45 @@ DIR_ENTITY = "entity"    # `vector` is a picked edge/face/axis direction; `token
 UNIFORM = "uniform"
 STACKED = "stacked"                      # 1x, 2x, 3x... ordered by position along the direction
 STACKED_SELECTION = "stackedSelection"   # 1x, 2x, 3x... in pick order
-SPACINGS = (UNIFORM, STACKED, STACKED_SELECTION)
+STACKED_REVERSE = "stackedReverse"       # stacked by position, the other way round: the farthest moves least
+LEVEL_TOL = 0.01                         # cm: stacked parts this close along the direction move together
+SPACINGS = (UNIFORM, STACKED, STACKED_REVERSE, STACKED_SELECTION)
 
 
 def new_id():
     return uuid.uuid4().hex[:10]
 
 
+# Settings a user can keep as their own defaults (everything that isn't about one design's parts).
+USER_DEFAULT_KEYS = ("earlier", "later", "unassigned", "defaultDistance", "askFolder", "showCropFrame",
+                     "shortHardwareNames", "ghostOpacity", "drawEdges", "trail", "annotation", "nameSource",
+                     "image")
+_user_defaults = {}
+
+
+def set_user_defaults(values):
+    """The user's own defaults (from their data folder): new manuals start with them, and
+    settings a stored manual lacks are filled from them."""
+    global _user_defaults
+    _user_defaults = {k: copy.deepcopy(v) for k, v in (values or {}).items() if k in USER_DEFAULT_KEYS}
+
+
+def user_defaults_from(settings):
+    """The part of a manual's settings that can become the user's defaults."""
+    return {k: copy.deepcopy(settings[k]) for k in USER_DEFAULT_KEYS if k in settings}
+
+
 def default_settings():
+    settings = _builtin_settings()
+    for key, value in _user_defaults.items():
+        if isinstance(value, dict) and isinstance(settings.get(key), dict):
+            settings[key].update(copy.deepcopy(value))
+        else:
+            settings[key] = copy.deepcopy(value)
+    return settings
+
+
+def _builtin_settings():
     return {
         "earlier": SHOWN,
         "later": HIDDEN,
@@ -370,6 +402,31 @@ def direction_unit(direction):
     return tuple(sign * c / n for c in vec)
 
 
+def is_negative(direction):
+    """True if a direction points the minus way: a "-X/-Y/-Z" axis, or `flip` set (both = plus).
+    The UI shows this as a negative distance on a plain X / Y / Z axis."""
+    kind = direction.get("kind", DIR_AXIS)
+    if kind == DIR_XYZ:
+        return False                    # the X/Y/Z amounts carry their own signs
+    neg = kind == DIR_AXIS and (direction.get("axis") or "+Z").startswith("-")
+    return neg != bool(direction.get("flip"))
+
+
+def axis_letter(direction):
+    """ "X", "Y" or "Z" of an axis direction."""
+    return (direction.get("axis") or "+Z")[-1]
+
+
+def signed_direction(direction, negative):
+    """The same direction pointing plus (negative=False) or minus: axes are kept as "+X/+Y/+Z"
+    with `flip` for minus."""
+    d = dict(direction)
+    if d.get("kind", DIR_AXIS) == DIR_AXIS:
+        d["axis"] = "+" + axis_letter(d)
+    d["flip"] = bool(negative) and d.get("kind", DIR_AXIS) != DIR_XYZ
+    return d
+
+
 def direction_label(direction):
     """Short text for a direction: "+Z", "X/Y/Z", "Along edge"."""
     kind = direction.get("kind", DIR_AXIS)
@@ -448,10 +505,16 @@ def _spacing_factors(ex, parts, centers, offsets, unit):
         c = centers[path]
         o = offsets.get(path, (0.0, 0.0, 0.0))
         return (c[0] + o[0]) * unit[0] + (c[1] + o[1]) * unit[1] + (c[2] + o[2]) * unit[2]
-    order = sorted(range(len(parts)), key=lambda i: along(parts[i]))
+    # Parts level with each other along the direction (a row of screws) share a tier: same distance.
+    pos = [along(p) for p in parts]
+    order = sorted(range(len(parts)), key=lambda i: pos[i], reverse=spacing == STACKED_REVERSE)
     factors = [0] * len(parts)
-    for rank, i in enumerate(order):
-        factors[i] = rank + 1
+    tier, tier_start = 0, None
+    for i in order:
+        if tier_start is None or abs(pos[i] - tier_start) > LEVEL_TOL:
+            tier += 1
+            tier_start = pos[i]
+        factors[i] = tier
     return factors
 
 
@@ -478,13 +541,15 @@ def add_section(manual, title=None):
     return sec
 
 
-def add_step(manual, section_id, title=None):
+def add_step(manual, section_id, title=None, after=None):
+    """A new step at the end of the section, or right after step `after` in it."""
     sec = find_section(manual, section_id)
     if sec is None:
         return None
     count = len(ordered_steps(manual))
     step = new_step(title or "Step {}".format(count + 1))
-    sec["steps"].append(step)
+    at = [i for i, st in enumerate(sec["steps"]) if st["id"] == after]
+    sec["steps"].insert(at[0] + 1 if at else len(sec["steps"]), step)
     return step
 
 
@@ -628,8 +693,20 @@ def leaf_state(manual, current_step_id, path):
 
 
 def covered_paths(manual):
-    """Every item path in the manual (for unassigned-part detection)."""
-    return {p for _, step in ordered_steps(manual) for p in item_paths(step) if p}
+    """Every item path in the manual's normal steps (for unassigned-part detection). Parts only in
+    preparation steps still count as unassigned: they get installed in a later step."""
+    return {p for _, step in ordered_steps(manual) if not step.get("prep") for p in item_paths(step) if p}
+
+
+def prepared_in(manual):
+    """Item path -> title of the preparation step it's in (the first one)."""
+    out = {}
+    for _, step in ordered_steps(manual):
+        if step.get("prep"):
+            for p in item_paths(step):
+                if p:
+                    out.setdefault(p, step.get("title", ""))
+    return out
 
 
 def is_covered(covered, path):
