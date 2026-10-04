@@ -152,7 +152,7 @@ def has_alpha(rows, channels):
     return bool(values - {255}) and values != {0}
 
 
-def write_png(rows, width, channels):
+def write_png(rows, width, channels, level=6):
     """Encode rows (RGB or RGBA bytes) as a PNG file's bytes."""
     color_type = 6 if channels == 4 else 2
     raw = b"".join(b"\x00" + r for r in rows)
@@ -163,7 +163,7 @@ def write_png(rows, width, channels):
 
     header = struct.pack(">IIBBBBB", width, len(rows), 8, color_type, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
-            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+            + chunk(b"IDAT", zlib.compress(raw, level)) + chunk(b"IEND", b""))
 
 
 # ---------------------------------------------------------------- PNG decode (fallback)

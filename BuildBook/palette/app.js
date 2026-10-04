@@ -51,6 +51,8 @@
     down: '<svg viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg>',
     grip: '<svg viewBox="0 0 16 16" class="grip-dots"><circle cx="5.5" cy="3.5" r="1.2"/><circle cx="10.5" cy="3.5" r="1.2"/><circle cx="5.5" cy="8" r="1.2"/><circle cx="10.5" cy="8" r="1.2"/><circle cx="5.5" cy="12.5" r="1.2"/><circle cx="10.5" cy="12.5" r="1.2"/></svg>',
     star: '<svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z"/></svg>',
+    lock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>',
+    unlock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.8-1"/></svg>',
     plus: '<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>',
     details: '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3M5.5 8.5h5M5.5 11h3.5"/></svg>',
     parts: '<svg viewBox="0 0 16 16"><path d="M8 1.5 14 4.8v6.4L8 14.5 2 11.2V4.8z M2 4.8 8 8l6-3.2 M8 8v6.5"/></svg>',
@@ -116,6 +118,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('.card'), function (card) {
       var h = card.querySelector('.card-head h3');
       if (!h || h.querySelector('.fold') || card.hasAttribute('data-nofold')) return;
+      if (card.closest('[data-pane="settings"], [data-pane="export"]')) return;   // Settings / Export: always open
       var key = cardKey(card);
       var byDefault = !!card.closest('[data-pane="step"]');
       card.setAttribute('data-card', key);
@@ -244,6 +247,7 @@
     $('coverInfo').textContent = (cover.camera ? '\u2713 View saved' : 'No saved view') +
       ((cover.annotations || []).length ? ' \u00b7 ' + cover.annotations.length + ' note' + (cover.annotations.length === 1 ? '' : 's') : '');
     $('coverInfo').title = cover.camera ? '' : 'No view saved: the cover uses the current camera';
+    $('btnCoverDeleteView').disabled = !cover.camera;
     // Opening a step from the list shows it; switching steps with the keyboard stays put.
     if (state.currentStepId && state.currentStepId !== lastStepId && pendingOpen) {
       showTab('step');
@@ -299,27 +303,23 @@
   function renderTree() {
     renderThumbsMissing();
     var n = 0;
-    var html = state.manual.sections.map(function (sec) {
-      var views = 0, exported = 0;
-      var steps = sec.steps.map(function (st) {
+    var html = state.manual.sections.map(function (sec, si) {
+      var views = 0;
+      var steps = sec.steps.map(function (st, ti) {
         n += 1;
+        var label = (si + 1) + '.' + (ti + 1);      // as the PDF numbers it: section.step
         if (st.camera) views += 1;
-        if (st.exportedAt) exported += 1;
         var thumb = state.thumbs && state.thumbs[st.id];
         return '<div class="step' + (st.id === state.currentStepId ? ' active' : '') + '" data-step="' + st.id + '" data-act="open">' +
           '<span class="grip" title="Drag to reorder (or into another section)">' + ICON.grip + '</span>' +
-          '<span class="thumb"' + thumbStyle(st.id) + '>' + (thumb ? '' : n) + '</span>' +
-          '<span class="num">' + n + '</span>' +
-          '<span class="name" title="' + esc(st.title) + '">' + esc(st.title) + '</span>' +
-          (st.prep ? '<span class="prep-tag" title="Preparation step">prep</span>' : '') +
-          ((st.repeat || 1) > 1 ? '<span class="prep-tag" title="Do this step ' + st.repeat + ' times">×' + st.repeat + '</span>' : '') +
-          '<span class="meta" title="Parts">' + st.items.length + '</span>' +
-          '<span class="status-icons">' +
-            '<span class="' + (st.camera ? 'on' : 'off') + '" title="' +
-              (st.camera ? 'Screenshot view saved' : 'No screenshot view saved yet') + '">' + ICON.camera + '</span>' +
-            '<span class="' + (st.exportedAt ? 'ok' : 'off') + '" title="' +
-              (st.exportedAt ? 'Exported ' + esc(st.exportedAt) : 'Not exported yet') + '">' + ICON.image + '</span>' +
-          '</span>' +
+          '<span class="thumb"' + thumbStyle(st.id) + '>' + (thumb ? '' : label) + '</span>' +
+          // Title, with its prep / repeat chips on a line underneath
+          '<span class="name step-title"><span class="step-name" title="' + esc(st.title) + '">' +
+            '<span class="step-num">' + label + '</span>' + esc(st.title) + '</span>' +
+          (st.prep || (st.repeat || 1) > 1 ? '<span class="step-chips">' +
+            (st.prep ? '<span class="prep-tag" title="Preparation step">prep</span>' : '') +
+            ((st.repeat || 1) > 1 ? '<span class="prep-tag" title="Do this step ' + st.repeat + ' times">×' + st.repeat + '</span>' : '') +
+          '</span>' : '') + '</span>' +
           '<span class="tools">' +
             '<button data-act="stepRename" title="Rename">' + ICON.edit + '</button>' +
             '<button data-act="stepDelete" class="danger" title="Delete step">' + ICON.close + '</button>' +
@@ -328,7 +328,6 @@
       var total = sec.steps.length;
       var progress = total ? '<span class="progress">' +
         '<span class="' + (views === total ? 'done' : '') + '" title="Steps with a saved view">' + ICON.camera + views + '/' + total + '</span>' +
-        '<span class="' + (exported === total ? 'done' : '') + '" title="Steps exported">' + ICON.image + exported + '/' + total + '</span>' +
         '</span>' : '';
       return '<div class="section' + (collapsed[sec.id] ? ' collapsed' : '') + '" data-section="' + sec.id + '">' +
         '<div class="section-head">' +
@@ -359,6 +358,8 @@
                 ICON.target + '<span class="lbl">Go to view</span></button>' +
               '<button class="btn small" data-act="secPicAnnotate" title="Draw on the section picture">' +
                 ICON.pen + '<span class="lbl">Annotate' + (nAnn ? ' (' + nAnn + ')' : '') + '</span></button>' +
+              (sec.image.camera ? '<button class="btn small danger" data-act="secPicDeleteView" title="Forget this section picture’s saved view (and its preview)">' +
+                ICON.trash + '<span class="lbl">Delete view</span></button>' : '') +
             '</div></div>';
         })() : '') +
         // A dashed "+ Add step" row closes every section's list: the quick way to add one.
@@ -372,7 +373,18 @@
     $('tree').innerHTML = (html || '<div class="empty-state"><p>No sections yet.</p><p class="sub">Start with a section, e.g. "Frame".</p></div>') +
       '<button class="add-step add-section' + (html ? '' : ' first') + '" data-act="addSection" title="Add a section at the end">' +
         ICON.plus + '<span>Add section</span></button>';
+    // "+ Add step" pressed here: once the new step is in, start typing its name.
+    if (renameNewIn && state.currentStepId && renameNewIn.before.indexOf(state.currentStepId) < 0) {
+      var newId = state.currentStepId;
+      renameNewIn = null;
+      var row = document.querySelector('#tree [data-step="' + newId + '"] .step-name');
+      if (row) {
+        row.closest('.step').scrollIntoView({ block: 'nearest' });
+        inlineRename(row, stepById(newId).title, function (v) { send('renameStep', { id: newId, title: v }); });
+      }
+    }
   }
+  var renameNewIn = null;            // {before: step ids} while waiting for a step added in this tab
 
   // The step's parts grouped with quantities, as the PDF lists them ("each time" for a repeated step).
   function renderStepBom(detail, step) {
@@ -450,6 +462,7 @@
     if (document.activeElement !== $('stepRepeat')) $('stepRepeat').value = step.repeat || 1;
 
     $('btnGoView').disabled = !detail.hasCamera;
+    $('btnDeleteView').disabled = !detail.hasCamera;
     $('hdrGoView').disabled = !detail.hasCamera;
     setLabel($('btnSaveView'), detail.hasCamera ? 'Update view' : 'Save view');
     $('hdrSaveView').title = detail.hasCamera ? 'Update view' : 'Save view';
@@ -992,6 +1005,29 @@
 
   function renderExport() {
     var img = state.manual.settings.image || {};
+    var brand = state.branding || {};
+    // Field by field: the saved default (greyed out, "unlock" to give this book its own) or the
+    // book's own ("lock" goes back to the default, when there is one).
+    var lockedF = state.brandingLocked || [], defaults = state.brandingDefaults || {};
+    ['company', 'author', 'logo'].forEach(function (key) {
+      var locked = lockedF.indexOf(key) >= 0;
+      var row = document.querySelector('[data-brand="' + key + '"]');
+      Array.prototype.forEach.call(row.querySelectorAll('input, .btn'), function (el) { el.disabled = locked; });
+      row.classList.toggle('locked', locked);
+      var lock = row.querySelector('[data-brand-lock]');
+      lock.classList.toggle('hidden', !locked && !defaults[key]);
+      lock.innerHTML = locked ? ICON.unlock : ICON.lock;   // (shows what a click does)
+      lock.title = locked ? 'Unlock: give this book its own ' + key : 'Use the saved default ' + key + ' again';
+      document.querySelector('[data-brand-note="' + key + '"]').textContent =
+        locked ? 'Using your saved default.' : '';
+    });
+    $('btnBrandSave').disabled = !(brand.company || brand.author || brand.logo) || lockedF.length === 3;
+    if (document.activeElement !== $('setCompany')) $('setCompany').value = brand.company || '';
+    if (document.activeElement !== $('setAuthor')) $('setAuthor').value = brand.author || '';
+    var logo = brand.logo || '';
+    $('logoPreview').style.backgroundImage = logo ? 'url(' + logo + ')' : '';
+    $('logoPreview').textContent = logo ? '' : 'No logo';
+    $('btnRemoveLogo').classList.toggle('hidden', !logo);
     $('exportFolder').textContent = state.exportFolder;
     $('exportFolder').title = state.exportFolder;
     if (document.activeElement !== $('setImgW')) $('setImgW').value = img.width;
@@ -1087,6 +1123,33 @@
   }
 
   function settings(patch) { send('setSettings', { settings: patch }); }
+  function branding(key, value) { send('setBranding', { key: key, value: value }); }
+  $('setCompany').addEventListener('change', function (e) { branding('company', e.target.value.trim()); });
+  $('setAuthor').addEventListener('change', function (e) { branding('author', e.target.value.trim()); });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-brand-lock]'), function (b) {
+    b.addEventListener('click', function () {
+      var key = b.getAttribute('data-brand-lock');
+      send('setBrandingField', { key: key, own: (state.brandingLocked || []).indexOf(key) >= 0 });
+    });
+  });
+  $('btnBrandSave').addEventListener('click', function () { send('saveBranding'); });
+  $('btnChooseLogo').addEventListener('click', function () { send('chooseLogo'); });
+  $('btnRemoveLogo').addEventListener('click', function () { branding('logo', ''); });
+  // A chosen logo: scaled to at most 600 px on its long side and kept as a PNG (small enough to
+  // save in the design, sharp enough for print at the cover's size).
+  function shrinkLogo(url) {
+    var img = new Image();
+    img.onload = function () {
+      var k = Math.min(1, 600 / Math.max(img.naturalWidth, img.naturalHeight));
+      var c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * k));
+      c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      branding('logo', c.toDataURL('image/png'));
+    };
+    img.onerror = function () { reportError('logo picture could not be read', 'app.js', 0); };
+    img.src = url;
+  }
   $('btnSaveDefaults').addEventListener('click', function () { send('saveMyDefaults'); });
   $('btnDeleteManual').addEventListener('click', function (e) {
     armed(e.currentTarget, function () { send('deleteManual'); });
@@ -1229,13 +1292,16 @@
     var secId = secEl && secEl.getAttribute('data-section');
 
     if (act === 'open') {
-      if (stepId === state.currentStepId) showTab('step'); else openStep(stepId, true);
+      // Opens the step in the canvas and stays on this list; clicking the open step again goes to
+      // the Step tab to edit it.
+      if (stepId === state.currentStepId) showTab('step'); else openStep(stepId, false);
     }
     else if (act === 'stepUp') send('moveStep', { id: stepId, delta: -1 });
     else if (act === 'stepDown') send('moveStep', { id: stepId, delta: 1 });
     else if (act === 'stepRename') {
-      var nameEl = stepEl.querySelector('.name');
-      inlineRename(nameEl, nameEl.textContent, function (v) { send('renameStep', { id: stepId, title: v }); });
+      // Only the title (not its prep / ×N chips underneath)
+      var nameEl = stepEl.querySelector('.step-name') || stepEl.querySelector('.name');
+      inlineRename(nameEl, stepById(stepId).title, function (v) { send('renameStep', { id: stepId, title: v }); });
     }
     else if (act === 'stepDelete') {
       var st = stepById(stepId);
@@ -1243,7 +1309,10 @@
       else armed(actEl, function () { send('deleteStep', { id: stepId }); });
     }
     else if (act === 'secToggle') { collapsed[secId] = !collapsed[secId]; renderTree(); }
-    else if (act === 'secAddStep') send('addStep', { sectionId: secId });
+    else if (act === 'secAddStep') {
+      renameNewIn = { before: allSteps().map(function (w) { return w.step.id; }) };
+      send('addStep', { sectionId: secId });
+    }
     else if (act === 'addSection') send('addSection');
     else if (act === 'secUp') send('moveSection', { id: secId, delta: -1 });
     else if (act === 'secDown') send('moveSection', { id: secId, delta: 1 });
@@ -1255,6 +1324,7 @@
     else if (act === 'secPicView') send('pictureView', { kind: 'section', id: secId });
     else if (act === 'secPicGo') send('pictureGo', { kind: 'section', id: secId });
     else if (act === 'secPicAnnotate') send('annotate', { kind: 'section', id: secId });
+    else if (act === 'secPicDeleteView') armed(actEl, function () { send('pictureClearView', { kind: 'section', id: secId }); });
   });
 
   $('tree').addEventListener('dblclick', function (e) {
@@ -1497,6 +1567,13 @@
   // The menu lives on <body>: inside a card (a CSS container) a fixed menu is placed and stacked
   // within that card, so the cards after it drew on top.
   document.body.appendChild($('itemMenu'));
+  // Icons for the right-click menus (parts list and steps).
+  var CTX_ICONS = {
+    trailOn: ICON.trailOn, trailOff: ICON.trailOff, anchor: ICON.anchor, unexplode: ICON.unexplode,
+    bom: ICON.bomOff, split: ICON.split, remove: ICON.trash,
+    edit: ICON.open, rename: ICON.edit, prep: ICON.parts, addBefore: ICON.plus, addAfter: ICON.plus,
+    up: ICON.up, down: ICON.down, delete: ICON.trash
+  };
   function closeItemMenu() { $('itemMenu').classList.add('hidden'); }
   $('items').addEventListener('contextmenu', function (e) {
     var li = e.target.closest('li[data-path], li[data-copies]');
@@ -1522,9 +1599,11 @@
     var m = $('itemMenu');
     m.innerHTML = (many ? '<div class="ctx-title">' + paths.length + ' ticked parts</div>' : '') + items.map(function (it) {
       if (it === null) return '<div class="ctx-sep"></div>';
-      return '<button class="ctx-item' + (it[2] ? ' ' + it[2] : '') + '" data-ctx="' + it[0] + '">' + esc(it[1]) + '</button>';
+      return '<button class="ctx-item' + (it[2] ? ' ' + it[2] : '') + '" data-ctx="' + it[0] + '">' +
+        (CTX_ICONS[it[0]] || '<svg viewBox="0 0 16 16"></svg>') + '<span>' + esc(it[1]) + '</span></button>';
     }).join('');
     m.setAttribute('data-paths', JSON.stringify(paths));
+    m.setAttribute('data-mode', 'parts');
     m.classList.remove('hidden');
     var r = m.getBoundingClientRect();
     m.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - r.width - 4)) + 'px';
@@ -1536,6 +1615,7 @@
     var paths = JSON.parse($('itemMenu').getAttribute('data-paths') || '[]');
     var act = b.getAttribute('data-ctx');
     closeItemMenu();
+    if ($('itemMenu').getAttribute('data-mode') === 'step') { stepMenuAction(act, $('itemMenu').getAttribute('data-step')); return; }
     if (act === 'trailOn') send('setTrail', { paths: paths, trail: true });
     else if (act === 'trailOff') send('setTrail', { paths: paths, trail: false });
     else if (act === 'anchor') send('setAnchor', { path: paths[0] });
@@ -1544,6 +1624,62 @@
     else if (act === 'split') send('toggleSplit', { paths: paths });
     else if (act === 'remove') send('removeItems', { paths: paths });
   });
+  // Steps tab: right-click a step for its options (same menu look as the parts list).
+  $('tree').addEventListener('contextmenu', function (e) {
+    var row = e.target.closest('.step[data-step]');
+    if (!row) return;
+    e.preventDefault();
+    var id = row.getAttribute('data-step'), st = stepById(id);
+    var w = allSteps().filter(function (x) { return x.step.id === id; })[0];
+    var first = w.ti === 1, last = w.ti === w.section.steps.length;
+    var items = [
+      ['edit', 'Edit in the Step tab'],
+      ['rename', 'Rename'],
+      null,
+      ['prep', st.prep ? 'Not a preparation step' : 'Preparation step'],
+      ['addBefore', 'Add a step before this one'],
+      ['addAfter', 'Add a step after this one'],
+      null,
+      first ? false : ['up', 'Move up'],
+      last ? false : ['down', 'Move down'],
+      null,
+      ['delete', 'Delete step', 'danger']
+    ].filter(function (it) { return it !== false; })
+     .filter(function (it, i, all) { return it !== null || (i > 0 && all[i - 1] !== null); });
+    var m = $('itemMenu');
+    m.innerHTML = '<div class="ctx-title">' + esc(w.si + '.' + w.ti + '  ' + st.title) + '</div>' + items.map(function (it) {
+      if (it === null) return '<div class="ctx-sep"></div>';
+      return '<button class="ctx-item' + (it[2] ? ' ' + it[2] : '') + '" data-ctx="' + it[0] + '">' +
+        (CTX_ICONS[it[0]] || '<svg viewBox="0 0 16 16"></svg>') + '<span>' + esc(it[1]) + '</span></button>';
+    }).join('');
+    m.setAttribute('data-mode', 'step');
+    m.setAttribute('data-step', id);
+    m.classList.remove('hidden');
+    var r = m.getBoundingClientRect();
+    m.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - r.width - 4)) + 'px';
+    m.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - r.height - 4)) + 'px';
+  });
+  function stepMenuAction(act, id) {
+    var w = allSteps().filter(function (x) { return x.step.id === id; })[0];
+    if (!w) return;
+    if (act === 'edit') { if (id === state.currentStepId) showTab('step'); else openStep(id, true); }
+    else if (act === 'rename') {
+      var el = document.querySelector('#tree [data-step="' + id + '"] .step-name');
+      if (el) inlineRename(el, w.step.title, function (v) { send('renameStep', { id: id, title: v }); });
+    }
+    else if (act === 'prep') send('setPrep', { stepId: id, prep: !w.step.prep });
+    else if (act === 'addAfter') {
+      renameNewIn = { before: allSteps().map(function (x) { return x.step.id; }) };
+      send('addStep', { sectionId: w.section.id, after: id });
+    }
+    else if (act === 'addBefore') {
+      renameNewIn = { before: allSteps().map(function (x) { return x.step.id; }) };
+      send('addStep', { sectionId: w.section.id, before: id });
+    }
+    else if (act === 'up') send('moveStep', { id: id, delta: -1 });
+    else if (act === 'down') send('moveStep', { id: id, delta: 1 });
+    else if (act === 'delete') send('deleteStep', { id: id });     // (Ctrl+Z brings it back)
+  }
   document.addEventListener('mousedown', function (e) { if (!e.target.closest('#itemMenu')) closeItemMenu(); });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeItemMenu(); });
   window.addEventListener('blur', closeItemMenu);
@@ -1577,6 +1713,16 @@
   $('btnLeftovers').addEventListener('click', function () { send('removeLeftovers'); });
   $('btnReloadAddin').addEventListener('click', function () { setBusy(true); send('reloadAddin'); });
   $('btnRefreshThumbs').addEventListener('click', function () { setBusy(true); send('refreshThumbs'); });
+  $('btnDeleteView').addEventListener('click', function (e) {
+    armed(e.currentTarget, function () { send('clearCamera'); });
+  });
+  $('btnCoverDeleteView').addEventListener('click', function (e) {
+    e.stopPropagation();
+    armed(e.currentTarget, function () { send('pictureClearView', { kind: 'cover' }); });
+  });
+  $('btnDeleteAllViews').addEventListener('click', function (e) {
+    armed(e.currentTarget, function () { send('clearAllViews'); });
+  });
   $('btnThumbsMissing').addEventListener('click', function () { setBusy(true); send('refreshThumbs'); });
   $('btnLines').addEventListener('click', function () { send('editLines'); });
   $('btnAddExplode').addEventListener('click', function () { send('addExplode', { paths: checkedPaths() }); });
@@ -1651,6 +1797,8 @@
           showFusionSelection(sel.paths || [], !!sel.ours);
         } else if (action === 'partMeshes') {
           gotPartMeshes(JSON.parse(data));
+        } else if (action === 'logoPicked') {
+          shrinkLogo(JSON.parse(data).url);
         } else if (action === 'compose') {
           // An exported PNG: draw its annotations on it and send it back to be saved.
           var job = JSON.parse(data);

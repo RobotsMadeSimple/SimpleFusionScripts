@@ -93,13 +93,21 @@ def _rgb(color):
 
 
 class Image:
-    """An image ready to embed: from PNG bytes."""
+    """An image ready to embed: from PNG bytes, optionally shown cut to `crop` = (left, top, w, h)
+    pixels. Fusion's renders (8-bit RGB / RGBA) go in without being decoded: the PDF viewer undoes
+    the PNG filtering itself, and an RGBA picture's alpha is dropped by its colour space (decoding
+    them in Python took ~3 s a picture). `width` / `height` are the size shown (the crop's)."""
 
-    def __init__(self, png):
-        self.width, self.height, self.data, self.params = _png_to_pdf(png)
+    def __init__(self, png, crop=None, opaque=False):
+        # opaque: an RGBA picture that has no real transparency (Fusion's renders); others (a logo)
+        # are flattened onto white.
+        (self.full_w, self.full_h, self.data, self.params, self.rgba) = _png_to_pdf(png, opaque)
+        self.crop = tuple(crop) if crop else None
+        self.width, self.height = (self.crop[2], self.crop[3]) if self.crop else (self.full_w, self.full_h)
 
 
-def _png_to_pdf(png):
+def _png_to_pdf(png, opaque=False):
+    """(width, height, data, decode params, is_rgba) for a PNG."""
     if png[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("not a PNG")
     pos, idat, info = 8, [], None
@@ -113,9 +121,10 @@ def _png_to_pdf(png):
             idat.append(body)
         pos += 12 + length
     width, height, depth, color_type, _, _, interlace = info
-    if depth == 8 and color_type == 2 and not interlace:
-        params = "/DecodeParms << /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns {} >>".format(width)
-        return width, height, b"".join(idat), params
+    if depth == 8 and (color_type == 2 or (color_type == 6 and opaque)) and not interlace:
+        colors = 3 if color_type == 2 else 4
+        params = "/DecodeParms << /Predictor 15 /Colors {} /BitsPerComponent 8 /Columns {} >>".format(colors, width)
+        return width, height, b"".join(idat), params, colors == 4
     # RGBA (or anything else crop.read_png handles): flatten onto white.
     w, h, channels, rows = crop.read_png(png)
     out = bytearray()
@@ -126,7 +135,7 @@ def _png_to_pdf(png):
                 out += bytes(((row[i + k] * a + 255 * (255 - a)) // 255) for k in range(3))
         else:
             out += row
-    return w, h, zlib.compress(bytes(out), 6), ""
+    return w, h, zlib.compress(bytes(out), 6), "", False
 
 
 class Page:
@@ -190,17 +199,27 @@ class Page:
         self.ops.append("/GS{} gs".format(pct))
 
     def image(self, image, x, y, w, h):
-        """Draw an Image with its bottom-left corner at (x, y), scaled to w x h."""
+        """Draw an Image with its bottom-left corner at (x, y), scaled to w x h (a cropped image:
+        the whole picture placed so its crop fills that box, clipped to it)."""
         if image not in self.images:
             self.images.append(image)
-        self.ops.append("q {} 0 0 {} {} {} cm /Im{} Do Q".format(
-            _num(w), _num(h), _num(x), _num(y), id(image)))
+        if image.crop is None:
+            self.ops.append("q {} 0 0 {} {} {} cm /Im{} Do Q".format(
+                _num(w), _num(h), _num(x), _num(y), id(image)))
+            return
+        left, top, cw, ch = image.crop
+        sx, sy = w / float(cw), h / float(ch)
+        self.ops.append("q {} {} {} {} re W n {} 0 0 {} {} {} cm /Im{} Do Q".format(
+            _num(x), _num(y), _num(w), _num(h),
+            _num(image.full_w * sx), _num(image.full_h * sy),
+            _num(x - left * sx), _num(y - (image.full_h - top - ch) * sy), id(image)))
 
 
 class Document:
-    def __init__(self, size=LETTER, title=""):
+    def __init__(self, size=LETTER, title="", author=""):
         self.size = size
         self.title = title
+        self.author = author
         self.pages = []
 
     def add_page(self):
@@ -218,12 +237,20 @@ class Document:
         font1 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
         font2 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
         image_obj = {}
+        drop_alpha = None               # (r, g, b, a) -> (r, g, b): the colour space of RGBA pictures
         for page in self.pages:
             for img in page.images:
                 if id(img) not in image_obj:
-                    head = ("<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB "
+                    space = "/DeviceRGB"
+                    if img.rgba:
+                        if drop_alpha is None:
+                            fn = b"{ pop }"
+                            drop_alpha = add(b"<< /FunctionType 4 /Domain [0 1 0 1 0 1 0 1] /Range [0 1 0 1 0 1] "
+                                             b"/Length %d >>\nstream\n" % len(fn) + fn + b"\nendstream")
+                        space = "[/DeviceN [/R /G /B /A] /DeviceRGB {} 0 R]".format(drop_alpha)
+                    head = ("<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace {} "
                             "/BitsPerComponent 8 /Filter /FlateDecode {} /Length {} >>\nstream\n").format(
-                        img.width, img.height, img.params, len(img.data)).encode("latin-1")
+                        img.full_w, img.full_h, space, img.params, len(img.data)).encode("latin-1")
                     image_obj[id(img)] = add(head + img.data + b"\nendstream")
         pages_id = len(objects) + 1 + 2 * len(self.pages)     # after every page and its content
         page_ids = []
@@ -241,7 +268,9 @@ class Document:
         assert add("<< /Type /Pages /Kids [{}] /Count {} >>".format(
             " ".join("{} 0 R".format(i) for i in page_ids), len(page_ids)).encode("latin-1")) == pages_id
         catalog = add("<< /Type /Catalog /Pages {} 0 R >>".format(pages_id).encode("latin-1"))
-        info = add(b"<< /Title (" + _escape(_clean(self.title)) + b") /Producer (BuildBook) >>")
+        info = add(b"<< /Title (" + _escape(_clean(self.title)) + b")"
+                   + (b" /Author (" + _escape(_clean(self.author)) + b")" if self.author else b"")
+                   + b" /Producer (BuildBook) >>")
 
         out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
         offsets = []

@@ -109,6 +109,39 @@ def _render(viewport, path, width, height, transparent):
     return viewport.saveAsImageFileWithOptions(opts) and os.path.exists(path)
 
 
+def render_raw(app, manual, path):
+    """Fusion's part of saving a picture: render the view to `path` (a PNG). Returns the crop box
+    to cut from it afterwards (finish_png), or None when the render is already the picture.
+    Split from the cutting so a PDF export renders every view first and cuts them all at once."""
+    image = manual["settings"].get("image", {})
+    out_width = int(image.get("width", 1600))
+    transparent = bool(image.get("transparent", False))
+    viewport = app.activeViewport
+    viewport.refresh()
+    _pump()
+    vw, vh = viewport.width, viewport.height
+    frac = effective_crop(manual, vw, vh)
+    if crop.is_full(frac):
+        if not _render(viewport, path, out_width, round(out_width * vh / float(vw)), transparent):
+            raise RuntimeError("Fusion could not save " + path)
+        return None
+    rw, rh, box = crop.render_plan(frac, out_width, vw, vh)
+    if not _render(viewport, path, rw, rh, transparent):
+        raise RuntimeError("Fusion could not render " + path)
+    return box
+
+
+def finish_png(path, box, keep_alpha=False, level=6):
+    """PNG bytes of a render_raw file, cut to `box` (no Fusion calls: safe in a worker thread)."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if box is None:
+        return data
+    _, _, channels, all_rows = crop.read_png(data)
+    rows, out_channels = crop.crop_rows(all_rows, channels, box, keep_alpha=keep_alpha)
+    return crop.write_png(rows, box[2], out_channels, level)
+
+
 def save_png(app, manual, step, path):
     """Save the step's image: the whole view, or the crop-ratio area cut from a larger render.
 
@@ -187,6 +220,14 @@ def _document_key(app):
 
 def thumbnail_path(app, step_id):
     return os.path.join(_THUMB_DIR, "{}_{}.png".format(_document_key(app), step_id))
+
+
+def delete_thumbnail(app, key):
+    """Delete one thumbnail (a step id, "section-<id>" or "cover"), if there is one."""
+    try:
+        os.remove(thumbnail_path(app, key))
+    except OSError:
+        pass
 
 
 def save_thumbnail(ctrl, step_id):

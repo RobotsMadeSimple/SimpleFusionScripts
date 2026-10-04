@@ -152,6 +152,7 @@
             <button id="btnSaveView" class="btn" data-icon="camera" title="Save the current camera as this step's view; opening the step goes there">Save view</button>
             <button id="btnGoView" class="btn" data-icon="target" title="Go back to this step's saved view">Go to view</button>
             <button id="btnAnnotate" class="btn" data-icon="pen" title="Draw arrows, lines, circles, boxes, text and numbered callouts on this step's picture">Annotate</button>
+            <button id="btnDeleteView" class="btn danger" data-icon="trash" title="Forget this step's saved view (and its preview). Its annotations stay.">Delete view</button>
             <button id="btnExportStep" class="btn primary" data-icon="download" title="Save this step as a PNG in the export folder">Export PNG</button>
           </div>
         </div>
@@ -215,8 +216,33 @@
           <button class="btn" data-pic="pictureView" data-icon="camera" title="Save the current camera as the cover picture's view">Save view</button>
           <button class="btn" data-pic="pictureGo" data-icon="target" title="Show the whole assembly at the cover's view">Go to view</button>
           <button class="btn" data-pic="annotate" data-icon="pen" title="Draw on the cover picture">Annotate</button>
+          <button class="btn danger" id="btnCoverDeleteView" data-icon="trash" title="Forget the cover picture's saved view (and its preview)">Delete view</button>
           <span class="sub" id="coverInfo"></span>
         </div>
+      </div>
+      <!-- Each field: the saved default (greyed, with an unlock) or this book's own. -->
+      <label for="setCompany">Company</label>
+      <div class="brand-row" data-brand="company">
+        <input id="setCompany" placeholder="Company name" title="On the cover and in every page's footer">
+        <button class="icon-btn brand-lock" data-brand-lock="company"></button>
+      </div>
+      <p class="hint brand-note" data-brand-note="company"></p>
+      <label for="setAuthor">Author</label>
+      <div class="brand-row" data-brand="author">
+        <input id="setAuthor" placeholder="Author name" title="On the cover (&quot;By ...&quot;) and in the PDF's document info">
+        <button class="icon-btn brand-lock" data-brand-lock="author"></button>
+      </div>
+      <p class="hint brand-note" data-brand-note="author"></p>
+      <label>Logo</label>
+      <div class="logo-row brand-row" data-brand="logo">
+        <div class="logo-preview" id="logoPreview" title="Shown at the top right of the cover">No logo</div>
+        <button id="btnChooseLogo" class="btn small" data-icon="upload" title="A PNG or JPG; it's scaled down and kept with the manual">Choose&hellip;</button>
+        <button id="btnRemoveLogo" class="btn small link" title="No logo on the cover">Remove</button>
+        <button class="icon-btn brand-lock" data-brand-lock="logo"></button>
+      </div>
+      <p class="hint brand-note" data-brand-note="logo"></p>
+      <div class="actions-row">
+        <button id="btnBrandSave" class="btn small" data-icon="star" title="Keep this company, author and logo as the defaults for every build book">Save as defaults for future books</button>
       </div>
       <div class="actions-row">
         <button id="btnExportPdf" class="btn primary" data-icon="pdf" title="Render every picture and write the manual as a PDF">Export PDF</button>
@@ -270,6 +296,7 @@
         <button id="btnExportManual" class="btn" data-icon="download" title="Save this manual (sections, steps, explodes, views, settings) to a .json file">Export</button>
         <button id="btnImportManual" class="btn" data-icon="upload" title="Replace this design's manual with one from a .json file, e.g. onto an older version">Import</button>
         <button id="btnDeleteManual" class="btn danger" data-icon="trash" title="Delete this design's build book (sections, steps, moves, views, settings) and start fresh. The model isn't touched. Ctrl+Z in the panel brings it back.">Delete</button>
+        <button id="btnDeleteAllViews" class="btn danger" data-icon="trash" title="Forget every saved view in this manual: steps, sections and the cover (and their previews). Annotations stay. Ctrl+Z brings them back.">Delete all views</button>
         <button id="btnLeftovers" class="btn" data-icon="broom" title="Delete stray exploded/ghost graphics left in the canvas. Never touches the model.">Clean up graphics</button>
       </div>
     </section>
@@ -280,7 +307,6 @@
         <button id="btnRefreshThumbs" class="btn" data-icon="camera" title="Thumbnails are kept per computer: take every step's again at its saved view">Refresh thumbnails</button>
       </div>
     </section>
-    <p class="hint footer-hint">The model never moves: exploded views are drawn on top. Click <b>Assembled</b> before editing parts.</p>
   </main>
 
 <script src="annot_draw.js"></script>

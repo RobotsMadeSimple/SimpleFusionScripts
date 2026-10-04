@@ -117,6 +117,10 @@ def _builtin_settings():
         },
         "splitBodies": [],             # component keys whose bodies are parts of their own (refs.BodyPart)
         "nameSource": "name",          # name | partNumber | description
+        "brandOwnFields": [],          # of company / author / logo: the ones this book sets itself (else the saved default)
+        "author": "",                  # (only with brandingOwn) PDF cover / document info
+        "company": "",
+        "logo": "",                    # PNG data URL (scaled down in the panel) for the PDF cover
         "partLabels": {},              # component key -> display label override
         "image": {
             "width": 1600,
@@ -541,15 +545,16 @@ def add_section(manual, title=None):
     return sec
 
 
-def add_step(manual, section_id, title=None, after=None):
-    """A new step at the end of the section, or right after step `after` in it."""
+def add_step(manual, section_id, title=None, after=None, before=None):
+    """A new step at the end of the section, or right after step `after` / before step `before`."""
     sec = find_section(manual, section_id)
     if sec is None:
         return None
     count = len(ordered_steps(manual))
     step = new_step(title or "Step {}".format(count + 1))
     at = [i for i, st in enumerate(sec["steps"]) if st["id"] == after]
-    sec["steps"].insert(at[0] + 1 if at else len(sec["steps"]), step)
+    ahead = [i for i, st in enumerate(sec["steps"]) if st["id"] == before]
+    sec["steps"].insert(at[0] + 1 if at else (ahead[0] if ahead else len(sec["steps"])), step)
     return step
 
 

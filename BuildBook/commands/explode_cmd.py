@@ -764,6 +764,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             nudge.isVisible = False
 
             ctrl.scene.sticky = True
+            ctrl.held_step = owner.step_id  # (picking "Along" shows the whole model: the panel keeps the step)
             owner.refresh()
 
             # mouseMove: the copy under the cursor draws highlighted (hover_copy redraws only when
@@ -1163,6 +1164,7 @@ class _Destroy(adsk.core.CommandEventHandler):
             owner._reset_session()
             owner.preselect = []
             owner.ctrl.scene.end_edit()
+            owner.ctrl.held_step = None
             owner.ctrl.show_step(owner.step_id)
         except Exception:
             log.error("explode destroy")

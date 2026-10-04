@@ -266,11 +266,15 @@ def _picture(flow, image, anns, max_h):
     flow.y -= img_h + 10
 
 
-def _image(png):
-    if not png:
+def _image(pic):
+    """A picture: PNG bytes, or {"png": bytes, "crop": (left, top, w, h) or None} (a whole render,
+    cut to its crop in the PDF itself)."""
+    if not pic:
         return None
     try:
-        return pdf.Image(png)
+        if isinstance(pic, dict):
+            return pdf.Image(pic["png"], pic.get("crop"), opaque=True)
+        return pdf.Image(pic)
     except Exception:
         return None
 
@@ -278,7 +282,8 @@ def _image(png):
 def build(data):
     """PDF bytes for the manual (see the module docstring for `data`)."""
     title = data.get("title") or "Build manual"
-    doc = pdf.Document(pdf.LETTER, title)
+    by = ", ".join(v for v in (data.get("author"), data.get("company")) if v)
+    doc = pdf.Document(pdf.LETTER, title, by)
     images = {}
     for sec in data["sections"]:
         images[id(sec)] = _image(sec.get("image"))
@@ -337,20 +342,47 @@ def build(data):
     for n, page in enumerate(doc.pages, 1):
         if n > 1:                       # not on the cover
             page.line(MARGIN, MARGIN + 8, W - MARGIN, MARGIN + 8, 0.5, RULE)
-            page.text(MARGIN, MARGIN - 4, pdf.fit(title, CONTENT_W - 90, 8), 8, False, MUTED)
+            foot = title + ("  \u00b7  " + data["company"] if data.get("company") else "")
+            page.text(MARGIN, MARGIN - 4, pdf.fit(foot, CONTENT_W - 90, 8), 8, False, MUTED)
             page.text_right(W - MARGIN, MARGIN - 4, "Page {} of {}".format(n, total), 8, False, MUTED)
     return doc.to_bytes()
 
 
+def _logo(data):
+    """The logo (a PNG data URL) as an image, or None."""
+    url = data.get("logo") or ""
+    if not url.startswith("data:image/png;base64,"):
+        return None
+    try:
+        import base64
+        return _image(base64.b64decode(url.split(",", 1)[1]))
+    except Exception:
+        return None
+
+
 def _cover(pages, data, title, toc, starts, image=None):
     p = pages[0]
+    logo = _logo(data)
+    if logo is not None:
+        # Top right, at most 160 x 64 pt, keeping its shape.
+        scale = min(160.0 / logo.width, 64.0 / logo.height)
+        lw, lh = logo.width * scale, logo.height * scale
+        p.image(logo, W - MARGIN - lw, TOP - lh + 10, lw, lh)
     y = TOP - 60 if image is not None else TOP - 120
+    if logo is not None:
+        y = min(y, TOP - 64 - 34)       # (the title starts below the logo)
     for line in pdf.wrap(title, CONTENT_W, 32, True):
         p.text(MARGIN, y, line, 32, True, INK)
         y -= 38
     if data.get("design"):
         p.text(MARGIN, y - 4, data["design"], 13, False, MUTED)
         y -= 22
+    if data.get("company"):
+        p.text(MARGIN, y - 4, pdf.fit(data["company"], CONTENT_W, 12, True), 12, True, INK)
+        y -= 20
+    if data.get("author"):
+        p.text(MARGIN, y - 4, pdf.fit("By " + data["author"], CONTENT_W, 11), 11, False, MUTED)
+        y -= 18
     if data.get("date"):
         p.text(MARGIN, y - 4, data["date"], 11, False, MUTED)
         y -= 18

@@ -433,6 +433,7 @@ class PickCommand:
     def update_status(self, hovered_name=None):
         if self.inputs is None:
             return
+        self.ctrl.send_picked(sorted(self.picked))      # the panel's lists highlight them too
         status = adsk.core.TextBoxCommandInput.cast(self.inputs.itemById("status"))
         if status is None:
             return
@@ -522,6 +523,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
 
             owner._reset_session()
             owner.step_paths = set(model.item_paths(step))
+            ctrl.held_step = owner.step_id  # (the panel stays on the step meanwhile)
             ctrl.scene.clear()          # full model, nothing exploded
             ctrl.app.activeViewport.refresh()
 
@@ -790,6 +792,9 @@ class _Destroy(adsk.core.CommandEventHandler):
             hidden_record.record(owner.ctrl.design(), "pick", [], [])
             owner.inputs = None
             owner.command = None
+            owner.ctrl.held_step = None
+            owner.ctrl._picked_sent = None
             owner.ctrl.show_step(owner.step_id)
+            owner.ctrl.send_selection()     # (the lists go back to showing Fusion's selection)
         except Exception:
             log.error("pick destroy")

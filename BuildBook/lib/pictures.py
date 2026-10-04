@@ -102,6 +102,26 @@ def render(ctrl, manual, kind, pid, width=None):
                 pass
 
 
+def render_raw(ctrl, manual, kind, pid):
+    """For the PDF: {"png": the whole render, "crop": box to show} (no Python decoding)."""
+    show(ctrl, manual, kind, pid, frame=False)
+    settings = json.loads(json.dumps(manual))
+    settings["settings"].setdefault("image", {})["transparent"] = False
+    tmp = os.path.join(tempfile.gettempdir(), "buildbook-pic-{}.png".format(uuid.uuid4().hex[:8]))
+    try:
+        box = capture.render_raw(ctrl.app, settings, tmp)
+        if kind != "step":
+            save_thumb(ctrl, kind, pid)
+        with open(tmp, "rb") as handle:
+            return {"png": handle.read(), "crop": box}
+    finally:
+        for leftover in (tmp, tmp + ".png"):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+
+
 def thumb_key(kind, pid):
     """Thumbnail name of a picture (steps: their id, as before)."""
     return pid if kind == "step" else ("cover" if kind == "cover" else "section-" + pid)

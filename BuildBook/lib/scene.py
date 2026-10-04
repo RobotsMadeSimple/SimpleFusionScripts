@@ -527,6 +527,8 @@ class Scene:
         try:
             for edge in native.edges:
                 ev = edge.evaluator
+                if ev is None:
+                    continue                # (some edges have none: skip them, keep the rest)
                 ok, start, end = ev.getParameterExtents()
                 if not ok:
                     continue
@@ -596,12 +598,21 @@ class Scene:
 
     def _draw_trails(self, settings):
         self._trail_settings = settings.get("trail", {})
+        # Dash length for drawn patterns: a fraction of the model's size (Fusion's own line style
+        # patterns didn't show on these lines: every style drew solid).
+        try:
+            box = adsk.core.Application.get().activeProduct.rootComponent.boundingBox
+            size = box.minPoint.distanceTo(box.maxPoint)
+        except Exception:
+            size = 30.0
+        self._dash = max(size / 120.0, 0.05) * float(self._trail_settings.get("scale", 1.0))
         for seg in self.segments.values():
             if seg["on"]:
                 self._add_segment(seg, "on")
 
     def _add_segment(self, seg, state):
-        coords = list(seg["start"]) + list(seg["end"])
+        style = "dotted" if state == "off" else self._trail_settings.get("style", "dashed")
+        coords = dash_coords(seg["start"], seg["end"], style, getattr(self, "_dash", 0.25))
         lines = self._group.addLines(adsk.fusion.CustomGraphicsCoordinates.create(coords), [], False)
         lines.id = seg["id"]
         lines.isScreenSpaceLineStyle = True
@@ -613,14 +624,14 @@ class Scene:
         """state: "on" (normal), "off" (hidden line, faint while editing lines), "hover"."""
         trail = self._trail_settings
         weight = float(trail.get("weight", 1.5))
-        pattern = LINE_STYLES.get(trail.get("style", "dashed"), LINE_STYLES["dashed"])
         color = _rgb(trail.get("color", "#404040"))
         if state == "off":
-            weight, pattern, color = 1.0, LINE_STYLES["dotted"], TRAIL_OFF_COLOR
+            weight, color = 1.0, TRAIL_OFF_COLOR
         elif state == "hover":
             weight, color = weight + 2.5, TRAIL_HOVER_COLOR
         lines.weight = weight
-        lines.lineStylePattern = pattern
+        # (the pattern is drawn as separate dashes: see dash_coords)
+        lines.lineStylePattern = LINE_STYLES["solid"]
         lines.lineStyleScale = float(trail.get("scale", 1.0))
         lines.color = adsk.fusion.CustomGraphicsSolidColorEffect.create(_color(color))
         # While editing lines, shown lines are clickable; hidden ones only on request,
@@ -662,6 +673,29 @@ class Scene:
         except Exception:
             log.error("replace trail line")
         self._add_segment(seg, state)
+
+
+# On / off lengths of each style, in dash lengths (on, off, on, off, ...).
+DASH_PATTERNS = {"dashed": (1.0, 0.6), "dotted": (0.12, 0.5), "center": (2.0, 0.4, 0.4, 0.4)}
+
+
+def dash_coords(start, end, style, dash):
+    """Flat coordinates for a trail from start to end as separate line pieces (pairs of points)
+    in the style's pattern; solid (or an unknown style): the one line."""
+    pattern = DASH_PATTERNS.get(style)
+    length = sum((b - a) ** 2 for a, b in zip(start, end)) ** 0.5
+    if not pattern or length <= 0 or dash <= 0 or length / dash > 4000:
+        return list(start) + list(end)
+    unit = [(b - a) / length for a, b in zip(start, end)]
+    out, at, i = [], 0.0, 0
+    while at < length:
+        step = pattern[i % len(pattern)] * dash
+        if i % 2 == 0:                      # a dash (the odd entries are gaps)
+            stop = min(at + step, length)
+            out += [start[k] + unit[k] * at for k in range(3)] + [start[k] + unit[k] * stop for k in range(3)]
+        at += step
+        i += 1
+    return out
 
 
 def sweep(design, everything=False, ids=(GROUP_ID, CROP_GROUP_ID, "BuildBookAnchor", "BuildBookPickHighlight")):

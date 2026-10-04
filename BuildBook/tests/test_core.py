@@ -340,6 +340,13 @@ class SplitBodyTests(unittest.TestCase):
         self.assertEqual(model.leaf_state(m, base["id"], "Gripper:1+#Cover1"), model.LATER)
         self.assertEqual(model.leaf_state(m, covers["id"], "Gripper:1+#Base"), model.EARLIER)
 
+    def test_add_step_before_and_after(self):
+        m, a, b, c = build()
+        sec = m["sections"][0]
+        before = model.add_step(m, sec["id"], "Before B", before=b["id"])
+        after = model.add_step(m, sec["id"], "After A", after=a["id"])
+        self.assertEqual([st["title"] for st in sec["steps"]], ["Base", "After A", "Before B", "Rollers"])
+
     def test_prep_step_parts_stay_unassigned(self):
         m, a, b, c = build()
         a["prep"] = True

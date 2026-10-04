@@ -153,6 +153,15 @@ textarea { resize: vertical; }
 .thumb { width: 44px; height: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg) center / cover no-repeat;
          display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 10px; flex: none; }
 .thumb.big { width: 128px; height: 80px; font-size: 11px; }
+.logo-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.logo-preview { width: 120px; height: 48px; border: 1px dashed var(--line); border-radius: var(--radius);
+                background: var(--surface) center / contain no-repeat; font-size: 11px; color: var(--muted);
+                display: flex; align-items: center; justify-content: center; }
+.brand-row { display: flex; align-items: center; gap: 6px; }
+.brand-row input { flex: 1; min-width: 0; }
+.brand-row.locked input, .brand-row.locked .logo-preview { opacity: .55; }
+.brand-note { margin: 2px 0 8px; min-height: 0; }
+.brand-note:empty { display: none; }
 .thumb canvas.pic-preview { display: block; width: 100%; height: 100%; }
 .step .num { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; width: 16px; text-align: right; }
 .step .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -278,6 +287,9 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .ctx-item { display: block; width: 100%; text-align: left; font: inherit; font-size: 12px; background: none; border: none;
             color: var(--fg); padding: 5px 12px; cursor: pointer; }
 .ctx-item:hover { background: var(--accent-soft); }
+.ctx-item { display: flex; align-items: center; gap: 8px; }
+.ctx-item svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.ctx-item.danger svg { color: inherit; }
 .ctx-item.danger { color: var(--danger); }
 .ctx-item.danger:hover { background: var(--danger); color: #fff; }
 .ctx-sep { height: 1px; background: var(--line-soft); margin: 4px 0; }
@@ -381,8 +393,8 @@ ul.list li { padding: 6px 10px; gap: 10px; }
 .step-head { margin-bottom: 12px; }
 .section { margin-bottom: 12px; }
 .section-head { padding: 8px 10px; }
-.steps { padding: 4px 0 6px 16px; }
-.step { padding: 5px 8px 5px 2px; gap: 8px; }
+.steps { padding: 4px 0 6px 4px; }                 /* (just a hint of indent under the section) */
+.step { padding: 5px 8px 5px 0; gap: 6px; }
 .thumbs-missing { margin-bottom: 12px; padding: 7px 10px; }
 
 /* ------------------------------------------------------------ folding cards (click the title) */
@@ -434,6 +446,11 @@ ul.list li { padding: 6px 10px; gap: 10px; }
 .card-head .card-tools { flex: none; }
 
 /* Bigger step pictures: list thumbnails, and the View & image preview filling the card */
+.step .step-title { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.step .step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .step-chips { display: flex; gap: 4px; }
+.step .step-num { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 400; margin-right: 6px; }
+.step .step-chips .prep-tag { margin: 0; }
 .step .thumb { width: 72px; height: 54px; font-size: 12px; }
 .view-row .thumb.big { width: auto; flex: 1 1 60%; height: auto; aspect-ratio: 4 / 3; max-width: 260px; }
 .view-row .view-actions { flex: 0 1 40%; min-width: 110px; }
@@ -491,3 +508,8 @@ ul.list li { padding: 6px 10px; gap: 10px; }
 /* Card header tools shown only while the card is folded (View & image) */
 .card:not(.collapsed) .card-tools.folded-only { display: none; }
 .card-tools.folded-only .icon-btn:disabled { opacity: .35; cursor: default; }
+
+/* Steps tab, narrow: everything stays on one line; a long title wraps instead of being cut off. */
+@container (max-width: 300px) {
+  .step .step-name { white-space: normal; overflow-wrap: anywhere; }
+}

@@ -93,6 +93,25 @@ class PdfTests(unittest.TestCase):
         self.assertTrue(data[first:].startswith(b"1 0 obj"))
 
 
+    def test_render_embedded_without_decoding(self):
+        render = png(40, 30, 4)
+        img = pdf.Image(render, crop=(5, 4, 20, 15), opaque=True)
+        self.assertTrue(img.rgba and "/Colors 4" in img.params)
+        self.assertEqual((img.width, img.height, img.full_w, img.full_h), (20, 15, 40, 30))
+        d = manual_pdf.build(dict(sample(), cover_image={"png": render, "crop": (5, 4, 20, 15)}))
+        self.assertIn(b"/DeviceN [/R /G /B /A] /DeviceRGB", d)
+        self.assertIn(b"{ pop }", d)
+
+    def test_branding(self):
+        import base64
+        d = sample()
+        d.update(author="Ada", company="Robots Made Simple",
+                 logo="data:image/png;base64," + base64.b64encode(png(60, 20, 4)).decode("ascii"))
+        data = manual_pdf.build(d)
+        self.assertIn(b"/Author (Ada, Robots Made Simple)", data)
+        self.assertEqual(data.count(b"/Subtype /Image"), manual_pdf.build(sample()).count(b"/Subtype /Image") + 1)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].endswith(".pdf"):
         with open(sys.argv.pop(1), "wb") as handle:

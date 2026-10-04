@@ -70,11 +70,17 @@ class Controller:
         self._resume_step = None
         self._notice = None
         self.undo_stack = []        # [(manual JSON before, what was done)]: Ctrl+Z in the panel
+        self.held_step = None       # step a dialog (Pick, Explode) is working on while it clears the view
 
     # ------------------------------------------------------------ design + storage
 
     def design(self):
         return adsk.fusion.Design.cast(self.app.activeProduct)
+
+    def current_step_id(self):
+        """The step the panel is on: the one shown, or the one a dialog is working on (Pick shows
+        the whole model meanwhile, which used to make the panel lose the step)."""
+        return self.scene.step_id or self.held_step
 
     def load(self):
         design = self.design()
@@ -203,7 +209,7 @@ class Controller:
         missing_paths = {m["path"] for m in missing}
         short = manual["settings"].get("shortHardwareNames", True)
         detail = None
-        _, step = model.find_step(manual, self.scene.step_id)
+        _, step = model.find_step(manual, self.current_step_id())
         started = time.perf_counter()
         if step is not None:
             numbers = {}
@@ -278,7 +284,7 @@ class Controller:
             "error": "",
             "document": self.app.activeDocument.name if self.app.activeDocument else "",
             "manual": manual,
-            "currentStepId": self.scene.step_id,
+            "currentStepId": self.current_step_id(),
             "edit": self.scene.edit,
             "step": detail,
             "unassigned": self._timed("state: unassigned list", self._unassigned_with_thumbs, manual, index),
@@ -286,6 +292,9 @@ class Controller:
             "units": length_units,
             "manualDefault": shown(manual["settings"]["defaultDistance"]),
             "myDefaults": userprefs.exists(),
+            "branding": userprefs.effective_branding(manual["settings"]),
+            "brandingLocked": sorted(userprefs.locked_fields(manual["settings"])),
+            "brandingDefaults": {k: bool(v) for k, v in userprefs.branding().items()},
             "exportFolder": capture.export_folder(manual),
             "thumbs": capture.thumbnail_urls(self.app, manual),
             "ratios": [[key, label] for key, label, _ in crop.RATIOS],
@@ -313,7 +322,19 @@ class Controller:
         log.info("fusion selection: {} part(s){}".format(len(paths), " (ours)" if ours else ""))
         palette.sendInfoToHTML("selection", json.dumps({"paths": paths, "ours": ours}))
 
+    def send_picked(self, paths):
+        """While the Pick dialog is open: what it has picked, highlighted in the panel's lists like a
+        Fusion selection (sent only when it changes)."""
+        if paths == getattr(self, "_picked_sent", None):
+            return
+        self._picked_sent = list(paths)
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        if palette is not None and palette.isVisible:
+            palette.sendInfoToHTML("selection", json.dumps({"paths": list(paths), "ours": True}))
+
     def push_state(self):
+        if getattr(self, "_quiet", False):
+            return                  # (exporting: the panel catches up once at the end)
         palette = self.ui.palettes.itemById(PALETTE_ID)
         if palette is None or not palette.isVisible:
             return                  # hidden: nothing to update (showing the panel pushes)
@@ -351,8 +372,14 @@ class Controller:
         if action == "deleteStep":
             _, target = model.find_step(manual, data.get("id"))
             return "deleted step “{}”".format(target["title"]) if target else None
+        if action == "clearAllViews":
+            return "deleted every saved view"
+        if action == "pictureClearView":
+            return "deleted the {} picture's view".format(data.get("kind") or "")
         if step is None:
             return None
+        if action == "clearCamera":
+            return "deleted the step's view"
         if action == "removeItems":
             n = len(data.get("paths") or [])
             return "removed {} part{} from the step".format(n, "" if n == 1 else "s") if n else None
@@ -402,7 +429,7 @@ class Controller:
             self.delete_manual(self.load())
             return
         manual = self.load()
-        step_id = data.get("stepId") or self.scene.step_id
+        step_id = data.get("stepId") or self.current_step_id()
         _, step = model.find_step(manual, step_id)
         rerender = False
         dirty = True
@@ -436,7 +463,7 @@ class Controller:
             model.move_section(manual, data["id"], int(data.get("delta", 0)))
             rerender = self.scene.active
         elif action == "addStep":
-            new = model.add_step(manual, data["sectionId"], data.get("title"), after=data.get("after"))
+            new = model.add_step(manual, data["sectionId"], data.get("title"), after=data.get("after"), before=data.get("before"))
             if new:
                 self.save(manual)
                 self.show_step(new["id"])
@@ -462,6 +489,7 @@ class Controller:
             self.notify("View saved for \u201c{}\u201d.".format(step["title"]))
         elif action == "clearCamera" and step:
             step["camera"] = None
+            capture.delete_thumbnail(self.app, step["id"])
         elif action == "goCamera" and step:
             capture.apply_camera(self.app.activeViewport, step.get("camera"))
             dirty = False
@@ -486,6 +514,73 @@ class Controller:
             self._export_manual(manual)
         elif action == "partMeshes":
             self._send_part_meshes(data.get("paths") or [], data.get("keys"))
+            return
+        elif action == "clearAllViews":
+            # Every saved view (steps, sections, cover) and its preview; Ctrl+Z brings the views back.
+            n = 0
+            for _, st in model.ordered_steps(manual):
+                if st.get("camera"):
+                    st["camera"] = None
+                    n += 1
+                capture.delete_thumbnail(self.app, st["id"])
+            for sec in manual["sections"]:
+                if sec.get("image", {}).get("camera"):
+                    sec["image"]["camera"] = None
+                    n += 1
+                capture.delete_thumbnail(self.app, "section-" + sec["id"])
+            if manual.get("cover", {}).get("camera"):
+                manual["cover"]["camera"] = None
+                n += 1
+            capture.delete_thumbnail(self.app, "cover")
+        elif action == "setBranding":
+            # Company / author / logo set for this book (a field showing the saved default is locked).
+            key, value = data.get("key"), data.get("value") or ""
+            settings = manual["settings"]
+            if key not in userprefs.BRANDING_KEYS or key in userprefs.locked_fields(settings):
+                return
+            settings[key] = value
+            settings["brandOwnFields"] = sorted(userprefs.own_fields(settings) | {key})
+            settings.pop("brandingOwn", None)
+        elif action == "setBrandingField":
+            # Unlock one field for this book (starting from the default), or lock it back to the default.
+            key, own = data.get("key"), bool(data.get("own"))
+            settings = manual["settings"]
+            if key not in userprefs.BRANDING_KEYS:
+                return
+            fields = userprefs.own_fields(settings)
+            settings.pop("brandingOwn", None)
+            if own:
+                if key not in fields:
+                    settings[key] = userprefs.branding()[key]
+                fields.add(key)
+            else:
+                fields.discard(key)
+            settings["brandOwnFields"] = sorted(fields)
+        elif action == "saveBranding":
+            # What this book shows becomes the default for every book (and its fields lock to it).
+            settings = manual["settings"]
+            userprefs.save_branding(userprefs.effective_branding(settings))
+            settings["brandOwnFields"] = []
+            settings.pop("brandingOwn", None)
+            self.notify("Saved: new build books use these company details.")
+        elif action == "chooseLogo":
+            # A picture file for the PDF's logo; the panel scales it down and saves it as a PNG.
+            dialog = self.ui.createFileDialog()
+            dialog.title = "Choose a logo"
+            dialog.filter = "Images (*.png;*.jpg;*.jpeg)"
+            if dialog.showOpen() != adsk.core.DialogResults.DialogOK:
+                return
+            path = dialog.filename
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            if len(raw) > 15 * 1024 * 1024:
+                self.ui.messageBox("That picture is too large (over 15 MB).")
+                return
+            mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+            palette = self.ui.palettes.itemById(PALETTE_ID)
+            if palette is not None:
+                palette.sendInfoToHTML("logoPicked", json.dumps(
+                    {"url": "data:{};base64,{}".format(mime, base64.b64encode(raw).decode("ascii"))}))
             return
         elif action == "refreshThumbs":
             self._refresh_thumbnails(manual)
@@ -522,6 +617,7 @@ class Controller:
                 self.notify("View saved for {}.".format(title))
             elif action == "pictureClearView":
                 pic["camera"] = None
+                capture.delete_thumbnail(self.app, pictures.thumb_key(data.get("kind"), data.get("id")))
             elif action == "pictureEnabled":
                 pic["enabled"] = bool(data.get("on"))
             else:
@@ -971,13 +1067,16 @@ class Controller:
         progress.show("BuildBook", "Rendering picture %v of %m for the PDF...", 0, max(1, len(ordered) + len(extra)), 0)
         cancelled = False
         pics = {}
+        raws = {}                       # step id -> (temp render, crop box): cut after all are rendered
+        t_start = time.perf_counter()
+        self._quiet = True
         try:
             for n, (kind, pid) in enumerate(extra):
                 if progress.wasCancelled:
                     cancelled = True
                     break
                 try:
-                    pics[(kind, pid)] = pictures.render(self, render, kind, pid)
+                    pics[(kind, pid)] = pictures.render_raw(self, render, kind, pid)
                 except Exception:
                     log.error("render {} picture for PDF".format(kind))
                 progress.progressValue = n + 1
@@ -989,19 +1088,28 @@ class Controller:
                 self.crop_overlay.clear()
                 tmp = os.path.join(tempfile.gettempdir(), "buildbook-pdf-{}.png".format(step["id"]))
                 try:
-                    capture.save_png(self.app, render, step, tmp)
-                    with open(tmp, "rb") as handle:
-                        images[step["id"]] = handle.read()
+                    raws[step["id"]] = (tmp, capture.render_raw(self.app, render, tmp))
                 except Exception:
                     log.error("render step for PDF")
-                finally:
-                    for leftover in (tmp, tmp + ".png"):
-                        try:
-                            os.remove(leftover)
-                        except OSError:
-                            pass
                 progress.progressValue = n + 1
+            # The renders go into the PDF whole, cut to their crop by the PDF itself (decoding
+            # and cutting them in Python took ~3 s a picture).
+            for step_id, (tmp, box) in raws.items():
+                try:
+                    with open(tmp, "rb") as handle:
+                        images[step_id] = {"png": handle.read(), "crop": box}
+                except Exception:
+                    log.error("read step picture for PDF")
+            log.info("PDF pictures: {} rendered in {:.1f} s".format(
+                len(raws) + len(extra), time.perf_counter() - t_start))
         finally:
+            self._quiet = False
+            for tmp, _ in raws.values():
+                for leftover in (tmp, tmp + ".png"):
+                    try:
+                        os.remove(leftover)
+                    except OSError:
+                        pass
             progress.hide()
             if return_to:
                 self.show_step(return_to)
@@ -1025,10 +1133,14 @@ class Controller:
             sections.append({"number": si, "title": sec.get("title", ""), "bom": bom(sec["steps"]), "steps": steps,
                              "image": pics.get(("section", sec["id"])),
                              "annotations": sec_pic.get("annotations", [])})
+        brand = userprefs.effective_branding(manual["settings"])
         data = {
             "title": manual.get("title") or "Build manual",
             "design": self.app.activeDocument.name if self.app.activeDocument else "",
             "date": time.strftime("%Y-%m-%d"),
+            "author": brand["author"].strip(),
+            "company": brand["company"].strip(),
+            "logo": brand["logo"],
             "sections": sections,
             "bom": raw_bom([st for _, st in ordered]),
             "cover_image": pics.get(("cover", None)),
