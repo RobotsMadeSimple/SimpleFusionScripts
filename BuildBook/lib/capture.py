@@ -31,6 +31,42 @@ def camera_to_dict(camera):
     }
 
 
+def current_camera(viewport):
+    """The view as it is on screen now, for saving. Fusion is given a moment to finish first:
+    with a SpaceMouse the camera Fusion reports could still be the one from before the move,
+    so a saved view snapped back to where it was."""
+    viewport.refresh()
+    _pump()
+    data = camera_to_dict(viewport.camera)
+    width = visible_width(viewport)
+    if width:
+        data["visibleWidth"] = width        # what's really on screen (see apply_camera)
+    log.info("view saved: {} / on screen {:.2f} cm wide".format(describe_camera(data), width or 0))
+    return data
+
+
+def visible_width(viewport):
+    """How wide the view is in model units, measured from the screen itself (left to right edge
+    through the middle). With a SpaceMouse the camera's own extents don't follow its zoom in an
+    orthographic view, but this does."""
+    try:
+        y = viewport.height / 2.0
+        a = viewport.viewToModelSpace(adsk.core.Point2D.create(0, y))
+        b = viewport.viewToModelSpace(adsk.core.Point2D.create(viewport.width, y))
+        return a.distanceTo(b)
+    except Exception:
+        return None
+
+
+def describe_camera(data):
+    if not data:
+        return "none"
+    e, t = data["eye"], data["target"]
+    dist = sum((a - b) ** 2 for a, b in zip(e, t)) ** 0.5
+    return "eye ({:.1f}, {:.1f}, {:.1f}) target ({:.1f}, {:.1f}, {:.1f}) distance {:.1f} cm, {} extents {:.1f}".format(
+        *e, *t, dist, "ortho" if data.get("type") == int(adsk.core.CameraTypes.OrthographicCameraType) else "persp", data.get("extents") or 0)
+
+
 def apply_camera(viewport, data, smooth=True):
     """Move the viewport to a stored camera. Returns False if there's none."""
     if not data:
@@ -50,8 +86,28 @@ def apply_camera(viewport, data, smooth=True):
     cam.target = adsk.core.Point3D.create(*data["target"])
     cam.upVector = adsk.core.Vector3D.create(*data["up"])
     cam.isFitView = False
+    if ortho and data.get("visibleWidth"):
+        smooth = False                  # (the zoom is checked against the screen right after)
     cam.isSmoothTransition = smooth
     viewport.camera = cam
+    # Orthographic: the zoom on screen can differ from the saved extents (a SpaceMouse zooms
+    # without updating them). Scale the extents until the view is as wide as when it was saved.
+    want = data.get("visibleWidth")
+    if ortho and want and not smooth:
+        for _ in range(3):
+            got = visible_width(viewport)
+            if not got or abs(got - want) <= want * 0.002:
+                break
+            cam = viewport.camera
+            cam.viewExtents = cam.viewExtents * want / got
+            cam.isSmoothTransition = False
+            viewport.camera = cam
+            log.info("view applied: corrected zoom, {:.2f} cm wide on screen, want {:.2f}".format(got, want))
+    if not smooth:
+        try:
+            log.info("view applied: asked " + describe_camera(data) + " / got " + describe_camera(camera_to_dict(viewport.camera)))
+        except Exception:
+            pass
     return True
 
 

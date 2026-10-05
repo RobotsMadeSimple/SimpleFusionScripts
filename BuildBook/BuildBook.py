@@ -484,7 +484,7 @@ class Controller:
             self.show_step(data["id"], move_camera=True)
             return
         elif action == "saveCamera" and step:
-            step["camera"] = capture.camera_to_dict(self.app.activeViewport.camera)
+            step["camera"] = capture.current_camera(self.app.activeViewport)
             capture.save_thumbnail(self, step["id"])
             self.notify("View saved for \u201c{}\u201d.".format(step["title"]))
         elif action == "clearCamera" and step:
@@ -607,7 +607,7 @@ class Controller:
             if pic is None:
                 return
             if action == "pictureView":
-                pic["camera"] = capture.camera_to_dict(self.app.activeViewport.camera)
+                pic["camera"] = capture.current_camera(self.app.activeViewport)
                 # Its preview: the picture's parts at this view (it stays on screen, framed).
                 pictures.show(self, manual, data.get("kind"), data.get("id"), move_camera=False, frame=False)
                 pictures.save_thumb(self, data.get("kind"), data.get("id"))
