@@ -52,9 +52,6 @@ def current_camera(viewport, ratio=None):
             log.info("view saved: zoom recalculated ({:.2f} cm shown with the reported extents, {:.2f} on screen)".format(
                 got, width))
             data["extents"] = data["extents"] * width / got
-    if width:
-        # What the picture really shows (see apply_camera): the crop frame's width in the model.
-        data["frameWidth"], data["frameRatio"] = width, ratio
     log.info("view saved: {} / crop frame {:.2f} cm wide".format(describe_camera(data), width or 0))
     return data
 
@@ -62,7 +59,7 @@ def current_camera(viewport, ratio=None):
 def frame_width(viewport, ratio):
     """How wide the crop frame (the area the picture shows) is in model units, measured from the
     screen itself. With a SpaceMouse the camera's extents don't follow its zoom in an orthographic
-    view, but this does; and as it's the picture's own area, it means the same on any screen size."""
+    view, but this does (current_camera uses it to work out the real zoom)."""
     try:
         vw, vh = viewport.width, viewport.height
         left, top, w, h = crop.centered_rect(crop.ratio_value(ratio, vw, vh), vw, vh)
@@ -102,23 +99,8 @@ def apply_camera(viewport, data, smooth=True):
     cam.target = adsk.core.Point3D.create(*data["target"])
     cam.upVector = adsk.core.Vector3D.create(*data["up"])
     cam.isFitView = False
-    if ortho and data.get("frameWidth"):
-        smooth = False                  # (the zoom is checked against the screen right after)
     cam.isSmoothTransition = smooth
-    viewport.camera = cam
-    # Orthographic: the zoom on screen can differ from the saved extents (a SpaceMouse zooms
-    # without updating them). Scale the extents until the crop frame shows as much as when saved.
-    want = data.get("frameWidth")
-    if ortho and want and not smooth:
-        for _ in range(3):
-            got = frame_width(viewport, data.get("frameRatio") or crop.VIEWPORT)
-            if not got or abs(got - want) <= want * 0.002:
-                break
-            cam = viewport.camera
-            cam.viewExtents = cam.viewExtents * want / got
-            cam.isSmoothTransition = False
-            viewport.camera = cam
-            log.info("view applied: corrected zoom, {:.2f} cm wide on screen, want {:.2f}".format(got, want))
+    viewport.camera = cam               # (the saved zoom is already right: see current_camera)
     if not smooth:
         try:
             log.info("view applied: asked " + describe_camera(data) + " / got " + describe_camera(camera_to_dict(viewport.camera)))
