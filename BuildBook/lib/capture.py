@@ -37,13 +37,18 @@ def apply_camera(viewport, data, smooth=True):
         return False
     cam = viewport.camera
     cam.cameraType = data.get("type", cam.cameraType)
+    ortho = cam.cameraType == adsk.core.CameraTypes.OrthographicCameraType
+    if data.get("angle"):
+        cam.perspectiveAngle = data["angle"]
+    # Extents only for orthographic views (they're its zoom). In perspective the eye and target
+    # already say how close the view is, and setting extents too makes Fusion move the eye to
+    # match them: a view saved after navigating with a SpaceMouse (which moves the eye without
+    # keeping Fusion's extents in step) came back zoomed out. Set first, so eye / target win.
+    if ortho and data.get("extents"):
+        cam.viewExtents = data["extents"]
     cam.eye = adsk.core.Point3D.create(*data["eye"])
     cam.target = adsk.core.Point3D.create(*data["target"])
     cam.upVector = adsk.core.Vector3D.create(*data["up"])
-    if data.get("angle"):
-        cam.perspectiveAngle = data["angle"]
-    if data.get("extents"):
-        cam.viewExtents = data["extents"]
     cam.isFitView = False
     cam.isSmoothTransition = smooth
     viewport.camera = cam
