@@ -31,28 +31,44 @@ def camera_to_dict(camera):
     }
 
 
-def current_camera(viewport):
+def current_camera(viewport, ratio=None):
     """The view as it is on screen now, for saving. Fusion is given a moment to finish first:
     with a SpaceMouse the camera Fusion reports could still be the one from before the move,
     so a saved view snapped back to where it was."""
     viewport.refresh()
     _pump()
     data = camera_to_dict(viewport.camera)
-    width = visible_width(viewport)
+    ratio = ratio or crop.VIEWPORT
+    width = frame_width(viewport, ratio)
+    if width and data.get("type") == int(adsk.core.CameraTypes.OrthographicCameraType):
+        # Work out the real zoom: put the camera back exactly as Fusion reports it, see how much
+        # the frame shows then, and scale the extents until it matches what was on screen. The
+        # saved extents are then right (and Fusion's camera is back in step with the screen).
+        for _ in range(4):
+            apply_camera(viewport, dict(data), smooth=False)
+            got = frame_width(viewport, ratio)
+            if not got or abs(got - width) <= width * 0.002:
+                break
+            log.info("view saved: zoom recalculated ({:.2f} cm shown with the reported extents, {:.2f} on screen)".format(
+                got, width))
+            data["extents"] = data["extents"] * width / got
     if width:
-        data["visibleWidth"] = width        # what's really on screen (see apply_camera)
-    log.info("view saved: {} / on screen {:.2f} cm wide".format(describe_camera(data), width or 0))
+        # What the picture really shows (see apply_camera): the crop frame's width in the model.
+        data["frameWidth"], data["frameRatio"] = width, ratio
+    log.info("view saved: {} / crop frame {:.2f} cm wide".format(describe_camera(data), width or 0))
     return data
 
 
-def visible_width(viewport):
-    """How wide the view is in model units, measured from the screen itself (left to right edge
-    through the middle). With a SpaceMouse the camera's own extents don't follow its zoom in an
-    orthographic view, but this does."""
+def frame_width(viewport, ratio):
+    """How wide the crop frame (the area the picture shows) is in model units, measured from the
+    screen itself. With a SpaceMouse the camera's extents don't follow its zoom in an orthographic
+    view, but this does; and as it's the picture's own area, it means the same on any screen size."""
     try:
-        y = viewport.height / 2.0
-        a = viewport.viewToModelSpace(adsk.core.Point2D.create(0, y))
-        b = viewport.viewToModelSpace(adsk.core.Point2D.create(viewport.width, y))
+        vw, vh = viewport.width, viewport.height
+        left, top, w, h = crop.centered_rect(crop.ratio_value(ratio, vw, vh), vw, vh)
+        y = top + h / 2.0
+        a = viewport.viewToModelSpace(adsk.core.Point2D.create(left, y))
+        b = viewport.viewToModelSpace(adsk.core.Point2D.create(left + w, y))
         return a.distanceTo(b)
     except Exception:
         return None
@@ -86,16 +102,16 @@ def apply_camera(viewport, data, smooth=True):
     cam.target = adsk.core.Point3D.create(*data["target"])
     cam.upVector = adsk.core.Vector3D.create(*data["up"])
     cam.isFitView = False
-    if ortho and data.get("visibleWidth"):
+    if ortho and data.get("frameWidth"):
         smooth = False                  # (the zoom is checked against the screen right after)
     cam.isSmoothTransition = smooth
     viewport.camera = cam
     # Orthographic: the zoom on screen can differ from the saved extents (a SpaceMouse zooms
-    # without updating them). Scale the extents until the view is as wide as when it was saved.
-    want = data.get("visibleWidth")
+    # without updating them). Scale the extents until the crop frame shows as much as when saved.
+    want = data.get("frameWidth")
     if ortho and want and not smooth:
         for _ in range(3):
-            got = visible_width(viewport)
+            got = frame_width(viewport, data.get("frameRatio") or crop.VIEWPORT)
             if not got or abs(got - want) <= want * 0.002:
                 break
             cam = viewport.camera
@@ -333,6 +349,10 @@ def export_step(ctrl, manual, step, folder):
         ctrl.update_overlay()
     log.info("export: " + path)
     return path
+
+
+def pump():
+    _pump()
 
 
 def _pump():

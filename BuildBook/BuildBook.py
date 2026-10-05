@@ -138,8 +138,12 @@ class Controller:
             self.scene.set_highlight(self.checked)
             if move_camera:
                 _, step = model.find_step(manual, step_id)
-                if step is not None:
-                    capture.apply_camera(self.app.activeViewport, step.get("camera"), smooth)
+                if step is not None and capture.apply_camera(self.app.activeViewport, step.get("camera"), smooth):
+                    # The frame is projected from the screen: let Fusion finish moving the camera
+                    # first (an instant move fires no camera events to redraw it afterwards).
+                    self.app.activeViewport.refresh()
+                    capture.pump()
+                    self.crop_overlay.key = None
         self.update_overlay()
         self.app.activeViewport.refresh()
         self.push_state()
@@ -484,14 +488,18 @@ class Controller:
             self.show_step(data["id"], move_camera=True)
             return
         elif action == "saveCamera" and step:
-            step["camera"] = capture.current_camera(self.app.activeViewport)
+            step["camera"] = capture.current_camera(self.app.activeViewport, manual["settings"].get("image", {}).get("ratio"))
             capture.save_thumbnail(self, step["id"])
             self.notify("View saved for \u201c{}\u201d.".format(step["title"]))
         elif action == "clearCamera" and step:
             step["camera"] = None
             capture.delete_thumbnail(self.app, step["id"])
         elif action == "goCamera" and step:
-            capture.apply_camera(self.app.activeViewport, step.get("camera"))
+            if capture.apply_camera(self.app.activeViewport, step.get("camera")):
+                self.app.activeViewport.refresh()
+                capture.pump()
+                self.crop_overlay.key = None
+                self.update_overlay()           # (an instant move fires no camera events)
             dirty = False
         elif action == "setRatio":
             manual["settings"].setdefault("image", {})["ratio"] = data.get("ratio", crop.VIEWPORT)
@@ -607,7 +615,7 @@ class Controller:
             if pic is None:
                 return
             if action == "pictureView":
-                pic["camera"] = capture.current_camera(self.app.activeViewport)
+                pic["camera"] = capture.current_camera(self.app.activeViewport, manual["settings"].get("image", {}).get("ratio"))
                 # Its preview: the picture's parts at this view (it stays on screen, framed).
                 pictures.show(self, manual, data.get("kind"), data.get("id"), move_camera=False, frame=False)
                 pictures.save_thumb(self, data.get("kind"), data.get("id"))
