@@ -200,6 +200,12 @@ class ExplodeMoveTests(unittest.TestCase):
         got = {p: moves[p][0][0][2] for p in ("Roller:1", "Roller:2", "Bolt:1")}
         self.assertEqual(got, {"Bolt:1": 2.0, "Roller:1": 1.0, "Roller:2": 1.0})
 
+    def test_stacked_base_distance_moves_everything_first(self):
+        self.add("+Z", parts=("Roller:1", "Roller:2"), spacing=model.STACKED, distance=1.0, base=5.0)
+        moves = self.run_moves()
+        self.assertEqual(moves["Roller:1"][0][0], (0.0, 0.0, 6.0))     # lower: base + 1 tier
+        self.assertEqual(moves["Roller:2"][0][0], (0.0, 0.0, 7.0))     # higher: base + 2 tiers
+
     def test_stacked_in_pick_order(self):
         self.add("+Y", spacing=model.STACKED_SELECTION, distance=2.0)
         moves = self.run_moves()
@@ -340,12 +346,37 @@ class SplitBodyTests(unittest.TestCase):
         self.assertEqual(model.leaf_state(m, base["id"], "Gripper:1+#Cover1"), model.LATER)
         self.assertEqual(model.leaf_state(m, covers["id"], "Gripper:1+#Base"), model.EARLIER)
 
+    def test_step_trail_look_overrides_the_manual(self):
+        m, a, b, c = build()
+        self.assertEqual(model.trail_look(m, a)["style"], m["settings"]["trail"]["style"])
+        a["trail"] = {"color": "#ff0000"}
+        look = model.trail_look(m, a)
+        self.assertEqual(look["color"], "#ff0000")
+        self.assertEqual(look["weight"], m["settings"]["trail"]["weight"])     # the rest: the manual's
+
     def test_add_step_before_and_after(self):
         m, a, b, c = build()
         sec = m["sections"][0]
         before = model.add_step(m, sec["id"], "Before B", before=b["id"])
         after = model.add_step(m, sec["id"], "After A", after=a["id"])
         self.assertEqual([st["title"] for st in sec["steps"]], ["Base", "After A", "Before B", "Rollers"])
+
+    def test_overview_has_every_part_and_move(self):
+        m, a, b, c = build()
+        ex = model.new_explode(model.new_direction("+Z"))
+        model.set_explode_parts(b, ex, [ref("Roller:1")])
+        b["explodes"].append(ex)
+        _, own = model.find_step(m, model.OVERVIEW_STEP)
+        extra = model.new_explode(model.new_direction("+X"))
+        model.set_explode_parts(own, extra, [ref("Motor:1")])
+        own["explodes"].append(extra)
+        step = model.effective_step(m, own)
+        self.assertEqual(sorted(model.item_paths(step)), ["Base:1", "Motor:1", "Roller:1", "Roller:2"])
+        self.assertEqual([e["id"] for e in step["explodes"]], [ex["id"], extra["id"]])  # steps' first
+        self.assertEqual(len(own["explodes"]), 1)                     # its own moves stay its own
+        m["overview"]["includeSteps"] = False
+        self.assertEqual([e["id"] for e in model.effective_step(m, own)["explodes"]], [extra["id"]])
+        self.assertEqual(model.leaf_state(m, model.OVERVIEW_STEP, "Loose:1"), model.UNASSIGNED)
 
     def test_prep_step_parts_stay_unassigned(self):
         m, a, b, c = build()

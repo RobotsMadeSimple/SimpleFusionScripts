@@ -38,6 +38,16 @@
       <span id="thumbsMissingText"></span>
       <button class="btn small" id="btnThumbsMissing" data-icon="camera" title="Show each step at its saved view and take its thumbnail again">Refresh</button>
     </div>
+    <!-- Animate the whole book: assembly (parts fly in), disassembly, and recording to a video -->
+    <div class="play-bar" id="playBar">
+      <span class="play-label" data-icon="play">Animate the book</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" data-play="play" data-icon="play" title="Play the assembly: each step's parts move into place, step by step"></button>
+      <button class="icon-btn" data-play="reverse" data-icon="playBack" title="Play it backwards: disassembly, last step first"></button>
+      <button class="icon-btn" data-play="record" data-icon="record" title="Record the assembly to a video (MP4 with FFmpeg) in the export folder"></button>
+      <button class="icon-btn" data-play="recordReverse" data-icon="recordBack" title="Record the disassembly to a video"></button>
+      <button class="btn small danger hidden" id="btnStopPlay" data-icon="stop" title="Stop the animation">Stop</button>
+    </div>
     <div id="tree"></div>
   </main>
 
@@ -81,6 +91,14 @@
         </div>
       </section>
 
+      <!-- The exploded view of the whole assembly, edited like a step -->
+      <section class="card hidden" id="overviewCard" data-nofold>
+        <div class="card-head"><h3 data-icon="explode">Exploded view of the whole assembly</h3></div>
+        <label class="check" title="Off: only this view's own moves below">
+          <input type="checkbox" id="overviewInclude"> Start from every step's explode moves</label>
+        <p class="hint">Its own moves below run after those. Its view, picture and annotations are on the Export tab.</p>
+      </section>
+
       <!-- Parts -->
       <section class="card">
         <div class="card-head">
@@ -120,6 +138,32 @@
         <!-- The default explode distance lives in Settings; a step that still has its own (from before)
              says so here, with a way back to the global one. -->
         <p class="hint hidden" id="stepDistanceNote"></p>
+        <div class="context-grid together-row">
+          <label for="stepTogether">When animated</label>
+          <select id="stepTogether" title="How this step's moves play in the animation (Steps tab play buttons)">
+            <option value="">Default</option>
+            <option value="0">One move after another</option>
+            <option value="1">All moves at once</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- This step's trail line look (over the one in Settings) -->
+      <section class="card">
+        <div class="card-head">
+          <h3 data-icon="lines" data-info="Off: this step follows the trail line look in Settings. On: its own color, weight and style (the rest of the book keeps the one in Settings).">Trail lines <span id="stepTrailSum" class="fold-sum"></span></h3>
+        </div>
+        <label class="check"><input type="checkbox" id="stepTrailOverride"> Override for this step</label>
+        <div class="grid three" id="stepTrailFields">
+          <div><label for="stepTrailColor">Color</label><input id="stepTrailColor" type="color"></div>
+          <div><label for="stepTrailWeight">Weight</label><input id="stepTrailWeight" type="number" min="0.5" max="6" step="0.5"></div>
+          <div><label for="stepTrailStyle">Style</label>
+            <select id="stepTrailStyle">
+              <option value="dashed">Dashed</option><option value="center">Center</option>
+              <option value="dotted">Dotted</option><option value="solid">Solid</option>
+            </select>
+          </div>
+        </div>
       </section>
 
       <!-- Other steps' parts: how they show in this step's view -->
@@ -220,6 +264,19 @@
           <span class="sub" id="coverInfo"></span>
         </div>
       </div>
+      <label class="check" title="A page before the sections showing the whole assembly exploded: every step's moves at once">
+        <input type="checkbox" id="setOverviewPic"> Exploded view of the whole assembly</label>
+      <div class="view-row" id="overviewActions">
+        <div class="thumb big" id="overviewThumb" title="Exploded view preview (updates when you save its view or annotate it)"></div>
+        <div class="view-actions">
+          <button class="btn" data-pic="pictureView" data-icon="camera" title="Save the current camera as the exploded view's view">Save view</button>
+          <button class="btn" data-pic="pictureGo" data-icon="target" title="Show the whole assembly exploded, at its view">Go to view</button>
+          <button class="btn" data-pic="annotate" data-icon="pen" title="Draw on the exploded view">Annotate</button>
+          <button class="btn" id="btnOverviewEdit" data-icon="explode" title="Add explode moves of its own and pick their parts (in the Step tab)">Edit moves</button>
+          <button class="btn danger" id="btnOverviewDeleteView" data-icon="trash" title="Forget the exploded view's saved view (and its preview)">Delete view</button>
+          <span class="sub" id="overviewInfo"></span>
+        </div>
+      </div>
       <!-- Each field: the saved default (greyed, with an unlock) or this book's own. -->
       <label for="setCompany">Company</label>
       <div class="brand-row" data-brand="company">
@@ -280,6 +337,20 @@
           </select>
         </div>
       </div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3 data-icon="play" data-info="Playing and recording the build (the play buttons on the Steps tab, and a section's or step's right-click menu). Videos need FFmpeg; without it the frames are saved as pictures.">Animation</h3></div>
+      <div class="grid three">
+        <div><label for="setAnimMove">Each move (s)</label><input id="setAnimMove" type="number" min="0.1" max="10" step="0.1" title="How long a part takes for one explode move"></div>
+        <div><label for="setAnimCam">Camera (s)</label><input id="setAnimCam" type="number" min="0" max="10" step="0.1" title="How long the camera takes to glide to the next step's view"></div>
+        <div><label for="setAnimPause">Pause (s)</label><input id="setAnimPause" type="number" min="0" max="10" step="0.1" title="Pause before and after each step's moves"></div>
+      </div>
+      <div class="grid two">
+        <div><label for="setAnimWidth">Video width (px)</label><input id="setAnimWidth" type="number" min="320" max="3840" step="160" title="The video's width; its shape follows the crop ratio"></div>
+        <div><label for="setAnimFps">Frames per second</label><input id="setAnimFps" type="number" min="5" max="60" step="1" title="More is smoother but takes longer to record"></div>
+      </div>
+      <label class="check" title="Steps set to Default play all their moves at the same time instead of one after another (each step can choose in its Explode moves card)">
+        <input type="checkbox" id="setAnimTogether"> Play a step's moves all at once</label>
     </section>
     <section class="card">
       <div class="card-head"><h3 data-icon="star" data-info="Your own starting settings, kept on this computer for every design: step views, explode distance, trail lines, annotation style, and the Export tab's image and folder options.">My defaults</h3></div>

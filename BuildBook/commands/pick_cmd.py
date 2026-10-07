@@ -16,7 +16,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from ..lib import hidden_record, log, model, refs, scene
+from ..lib import boxselect, hidden_record, log, model, refs, scene
 
 HIGHLIGHT_GROUP_ID = "BuildBookPickHighlight"
 
@@ -65,6 +65,8 @@ class PickCommand:
         self.hover_ended = None  # perf_counter time preselection ended, or None
         self.hover_at = 0.0      # last hover ray test
         self.mouse_down = None   # (x, y, time) of the left button press
+        self.box = boxselect.Box()  # drag-box picking
+        self.ctrl_held = False      # Ctrl down: picked parts solid and clickable
         self.inputs = None
         self.command = None
         self.syncing = False     # sync_box is refilling the Parts box: ignore its selection events
@@ -157,6 +159,50 @@ class PickCommand:
         self.update_status()
         self.redraw()                           # draws the outline
 
+    def set_ctrl(self, held):
+        """Ctrl down / up: picked parts turn solid and clickable / back to see-through."""
+        if held == self.ctrl_held:
+            return
+        self.ctrl_held = held
+        self.redraw()
+
+    def box_pick(self, sel, remove=False):
+        """A drag box: pick every part it takes (Ctrl: take them out instead), at the pick level."""
+        design, viewport = self.ctrl.design(), self.ctrl.app.activeViewport
+        hidden = [h.fullPathName for h in self.hidden]
+        ghosted = self.ghosted
+        parts = boxselect.leaf_parts(
+            design, skip=lambda p: any(model.is_self_or_ancestor(h, p) for h in hidden),
+            showing=lambda b: b.isVisible or _body_key(b) in ghosted)
+        changed = 0
+        for path, part, bbox in parts:
+            try:
+                if not boxselect.takes(sel, boxselect.screen_box(viewport, bbox)):
+                    continue
+                occ, clicked = self._target(part.body if isinstance(part, refs.BodyPart) else part)
+            except Exception:
+                continue
+            if occ is None:
+                continue
+            unit = occ.fullPathName
+            if remove:
+                drop = [p for p in self.picked
+                        if model.is_self_or_ancestor(p, clicked) or model.is_self_or_ancestor(unit, p)]
+                for p in drop:
+                    del self.picked[p]
+                changed += len(drop)
+                continue
+            if any(model.is_self_or_ancestor(p, clicked) for p in self.picked):
+                continue                    # already in (or inside an assembly that is)
+            for p in [p for p in self.picked if model.is_self_or_ancestor(unit, p)]:
+                del self.picked[p]
+            self.picked[unit] = occ
+            changed += 1
+        log.info("pick: box ({}) {} {} part(s)".format(
+            "crossing" if sel[4] else "window", "took out" if remove else "picked", changed))
+        self.update_status()
+        self.redraw()
+
     def redraw(self):
         """Run one preview. doExecutePreview from a mouse event is ignored but any changed input
         brings one, so: if the status text just changed that's it, else flip the hidden "nudge"
@@ -173,10 +219,13 @@ class PickCommand:
 
     def body_under(self, pos):
         try:
-            # Picked parts are hidden and drawn see-through: they still count under the cursor.
+            # Picked parts show see-through and clicks go through them to what's behind. With Ctrl
+            # held they show solid and can be clicked (to take them out) like anything else.
+            if self.ctrl_held:
+                return refs.body_at(self.ctrl.app.activeViewport, self.ctrl.design(), pos)
             ghosted = self.ghosted
             return refs.body_at(self.ctrl.app.activeViewport, self.ctrl.design(), pos,
-                                lambda b: b.isVisible or _body_key(b) in ghosted)
+                                lambda b: b.isVisible and _body_key(b) not in ghosted)
         except Exception:
             log.error("pick: find the part under the cursor")
             return None
@@ -277,6 +326,9 @@ class PickCommand:
                     coords, lengths = self.ctrl.scene._edges(native)
                     if not lengths:
                         continue
+                    if see_through and len(coords) // 3 > scene.EDIT_EDGE_LIMIT:
+                        drawn += 1
+                        continue        # (very many edges: its blue see-through faces show it's picked)
                     lines = self._add(group, native, "edges", coords,
                                       lambda g, c: g.addLines(c, [], True, lengths))
                     lines.transform = matrix
@@ -536,13 +588,10 @@ class _Created(adsk.core.CommandCreatedEventHandler):
                 "<b>Click</b> pick / unpick &nbsp; <b>Hover + H</b> hide "
                 "&nbsp; <b>U</b> unhide last".format(step["title"]), 3, True)
 
-            sel = inputs.addSelectionInput("parts", "Parts", "Click parts to pick them")
-            sel.addSelectionFilter("Bodies")
-            sel.addSelectionFilter("Occurrences")
-            sel.setSelectionLimits(0, 0)
-            # Hidden: Fusion's selection highlight drew over nearby parts and made them hard to
-            # click. Picks are found from the mouse (click / hover), shown by the outline only.
-            sel.isVisible = False
+            # No selection box: Fusion's selection highlight drew over nearby parts, and even a
+            # hidden box kept Fusion's own selecting going (its prompt on the cursor, clicks taken
+            # as selections). Picks are found from the mouse (click / hover / drag box) instead.
+            sel = None
 
             level = inputs.addDropDownCommandInput(
                 "level", "Click picks", adsk.core.DropDownStyles.TextListDropDownStyle)
@@ -563,6 +612,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             owner.draw_highlight()
 
             for event, cls in ((cmd.mouseDown, _MouseDown), (cmd.mouseUp, _MouseUp), (cmd.mouseMove, _MouseMove),
+                               (cmd.mouseDrag, _MouseDrag), (cmd.keyUp, _KeyUp),
                                (cmd.keyDown, _KeyDown),
                                (cmd.inputChanged, _InputChanged), (cmd.executePreview, _Preview),
                                (cmd.execute, _Execute), (cmd.destroy, _Destroy)):
@@ -583,6 +633,8 @@ class _MouseDown(adsk.core.MouseEventHandler):
         p = args.viewportPosition
         self.owner.mouse_down = (p.x, p.y, time.perf_counter()) \
             if args.button == adsk.core.MouseButtons.LeftMouseButton else None
+        if self.owner.mouse_down is not None:
+            self.owner.box.press(p)
 
 
 class _MouseUp(adsk.core.MouseEventHandler):
@@ -598,9 +650,16 @@ class _MouseUp(adsk.core.MouseEventHandler):
             args = adsk.core.MouseEventArgs.cast(args)
             down, owner.mouse_down = owner.mouse_down, None
             p = args.viewportPosition
+            sel = owner.box.release()
+            if sel is not None and args.button == adsk.core.MouseButtons.LeftMouseButton:
+                ctrl_key = bool(args.keyboardModifiers & adsk.core.KeyboardModifiers.CtrlKeyboardModifier)
+                owner.box_pick(sel, remove=ctrl_key)
+                return
             if (down is None or args.button != adsk.core.MouseButtons.LeftMouseButton
                     or abs(p.x - down[0]) + abs(p.y - down[1]) > 6 or time.perf_counter() - down[2] > 1.0):
                 return                          # a drag (orbit, box select...), not a click
+            # (Ctrl as the click saw it: a key-up while the panel had the focus can be missed)
+            owner.ctrl_held = bool(args.keyboardModifiers & adsk.core.KeyboardModifiers.CtrlKeyboardModifier)
             body = owner.body_under(p)
             if body is None:
                 log.info("pick: click at ({:.0f}, {:.0f}) on nothing".format(p.x, p.y))
@@ -608,6 +667,22 @@ class _MouseUp(adsk.core.MouseEventHandler):
             owner.toggle(body)
         except Exception:
             log.error("pick click")
+
+
+class _MouseDrag(adsk.core.MouseEventHandler):
+    """Dragging with the left button: the pick box follows the mouse."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    def notify(self, args):
+        try:
+            owner = self.owner
+            owner.box.drag(owner.ctrl.design(), owner.ctrl.app.activeViewport,
+                           adsk.core.MouseEventArgs.cast(args).viewportPosition)
+        except Exception:
+            log.error("pick box drag")
 
 
 class _MouseMove(adsk.core.MouseEventHandler):
@@ -712,12 +787,27 @@ class _KeyDown(adsk.core.KeyboardEventHandler):
         try:
             args = adsk.core.KeyboardEventArgs.cast(args)
             log.info("pick: key {}".format(args.keyCode))
-            if args.keyCode == adsk.core.KeyCodes.HKeyCode:
+            if args.keyCode == adsk.core.KeyCodes.ControlKeyCode:
+                self.owner.set_ctrl(True)
+            elif args.keyCode == adsk.core.KeyCodes.HKeyCode:
                 self.owner.hide_hovered()
             elif args.keyCode == adsk.core.KeyCodes.UKeyCode:
                 self.owner.unhide_last()
         except Exception:
             log.error("pick keyDown")
+
+
+class _KeyUp(adsk.core.KeyboardEventHandler):
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    def notify(self, args):
+        try:
+            if adsk.core.KeyboardEventArgs.cast(args).keyCode == adsk.core.KeyCodes.ControlKeyCode:
+                self.owner.set_ctrl(False)
+        except Exception:
+            log.error("pick keyUp")
 
 
 class _InputChanged(adsk.core.InputChangedEventHandler):
@@ -754,7 +844,7 @@ class _Preview(adsk.core.CommandEventHandler):
             t0 = time.perf_counter()
             self.owner.status_changed = False
             self.owner.apply_hidden()
-            self.owner.draw_highlight(see_through=True)
+            self.owner.draw_highlight(see_through=not self.owner.ctrl_held)
             self.owner.save_record()
             log.info("pick: preview {:.0f} ms".format((time.perf_counter() - t0) * 1000))
             # Not a result: execute() still runs and writes the step, and the

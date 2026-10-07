@@ -69,7 +69,7 @@ def new_id():
 # Settings a user can keep as their own defaults (everything that isn't about one design's parts).
 USER_DEFAULT_KEYS = ("earlier", "later", "unassigned", "defaultDistance", "askFolder", "showCropFrame",
                      "shortHardwareNames", "ghostOpacity", "drawEdges", "trail", "annotation", "nameSource",
-                     "image")
+                     "image", "animation")
 _user_defaults = {}
 
 
@@ -112,6 +112,10 @@ def _builtin_settings():
             "style": "dashed",
             "scale": 1.0,
         },
+        "animation": {                 # playing / recording the build (lib/timeline.py, lib/animate.py)
+            "moveSeconds": 1.0, "cameraSeconds": 1.0, "pauseSeconds": 0.5, "fps": 30, "videoWidth": 1280,
+            "allAtOnce": True,         # default for steps: their moves all at the same time
+        },
         "annotation": {                # style for new annotations (palette/annot_draw.js)
             "color": "#d9463e", "weight": 3, "dashed": False, "size": 28, "bold": False, "box": False,
         },
@@ -151,6 +155,7 @@ def new_explode(direction=None, spacing=UNIFORM):
         "direction": dict(direction) if direction else new_direction(),
         "distance": None,       # cm; None = step default
         "spacing": spacing,
+        "base": 0.0,            # cm; stacked spacings: every part moves this first, then its stacking
         "parts": [],
     }
 
@@ -173,6 +178,8 @@ def new_step(title="New step"):
         "camera": None,
         "annotations": [],      # drawn on the step's picture (palette/annot_draw.js)
         "repeat": 1,            # do this step N times (the manual says so; the BOM totals multiply)
+        "together": None,       # animation: all its moves at once (True), one after another (False), None = default
+        "trail": None,          # its own trail line look {"color", "weight", "style"}, None = the manual's
     }
 
 
@@ -194,6 +201,7 @@ def new_manual(title="Build manual"):
         "sections": [],
         "settings": default_settings(),
         "cover": new_picture(enabled=True),
+        "overview": new_picture(),         # the whole assembly exploded (every step's moves at once)
     }
 
 
@@ -220,6 +228,8 @@ def from_json(text):
     _merge_defaults(data["settings"], default_settings())
     for key, value in new_picture(enabled=True).items():
         data.setdefault("cover", {}).setdefault(key, value)
+    for key, value in new_picture().items():
+        data.setdefault("overview", {}).setdefault(key, value)
     for section in data["sections"]:
         section.setdefault("steps", [])
         for key, value in new_picture().items():
@@ -241,6 +251,7 @@ def from_json(text):
                 ex.setdefault("name", "")
                 ex.setdefault("distance", None)
                 ex.setdefault("spacing", UNIFORM)
+                ex.setdefault("base", 0.0)
                 ex.setdefault("parts", [])
                 for key, value in new_direction().items():
                     ex.setdefault("direction", new_direction()).setdefault(key, value)
@@ -328,7 +339,9 @@ def find_section(manual, section_id):
 
 
 def find_step(manual, step_id):
-    """(section, step) or (None, None)."""
+    """(section, step) or (None, None). The exploded view's own step: (None, it)."""
+    if step_id == OVERVIEW_STEP:
+        return None, overview_step(manual)
     for sec in manual["sections"]:
         for step in sec["steps"]:
             if step["id"] == step_id:
@@ -385,6 +398,13 @@ def image_name(manual, step):
 
 
 # ---------------------------------------------------------------- explode moves
+
+def trail_look(manual, step):
+    """The trail line look a step draws with: the manual's, with the step's own on top."""
+    look = dict(manual["settings"].get("trail") or {})
+    look.update((step or {}).get("trail") or {})
+    return look
+
 
 def step_distance(manual, step):
     """The step's default explode distance (cm), falling back to the manual's."""
@@ -485,9 +505,11 @@ def evaluate(manual, step, centers, upto=None):
         if _length(unit) > 0:
             base = explode_distance(manual, step, ex)
             parts = [p for p in ex["parts"] if p["ref"].get("path") in centers]
+            # Stacked: all the parts first move the base distance together, then spread out.
+            lead = float(ex.get("base") or 0.0) if ex.get("spacing", UNIFORM) != UNIFORM else 0.0
             for part, factor in zip(parts, _spacing_factors(ex, parts, centers, offsets, unit)):
                 path = part["ref"]["path"]
-                d = part["distance"] if part.get("distance") is not None else base * factor
+                d = part["distance"] if part.get("distance") is not None else base * factor + lead
                 vec = tuple(c * d for c in unit)
                 moves.setdefault(path, []).append((vec, part.get("trail", True), ex["id"]))
                 o = offsets.get(path, (0.0, 0.0, 0.0))
@@ -678,6 +700,8 @@ def leaf_state(manual, current_step_id, path):
     """
     steps = ordered_steps(manual)
     cur = step_index(manual, current_step_id)
+    if cur is None:
+        return UNASSIGNED               # (the exploded view: every part in a step is one of its own)
     state = UNASSIGNED
     prepared = False
     for i, (_, step) in enumerate(steps):
@@ -695,6 +719,46 @@ def leaf_state(manual, current_step_id, path):
     if prepared and state != EARLIER:
         return UNASSIGNED
     return state
+
+
+OVERVIEW_STEP = "__overview__"
+
+
+def overview_step(manual):
+    """The exploded view of the whole assembly, as a step of its own: its own explode moves (made
+    with the usual explode editor) run after every step's moves (unless includeSteps is off)."""
+    ov = manual.setdefault("overview", new_picture())
+    step = ov.get("step")
+    if not isinstance(step, dict):
+        step = ov["step"] = new_step("Exploded view")
+    step["id"] = OVERVIEW_STEP
+    template = new_step()
+    for key, value in template.items():
+        step.setdefault(key, value)
+    ov.setdefault("includeSteps", True)
+    return step
+
+
+def effective_step(manual, step):
+    """What a step shows: itself, or for the exploded view every step's parts and moves (in book
+    order) followed by its own."""
+    if step is None or step.get("id") != OVERVIEW_STEP:
+        return step
+    out = dict(step)
+    items, seen, explodes = [], set(), []
+    if manual.get("overview", {}).get("includeSteps", True):
+        for _, st in ordered_steps(manual):
+            for item in st["items"]:
+                if item["ref"].get("path") not in seen:
+                    seen.add(item["ref"].get("path"))
+                    items.append(item)
+            explodes.extend(st.get("explodes", []))
+    for item in step["items"]:
+        if item["ref"].get("path") not in seen:
+            seen.add(item["ref"].get("path"))
+            items.append(item)
+    out["items"], out["explodes"] = items, explodes + list(step.get("explodes", []))
+    return out
 
 
 def covered_paths(manual):

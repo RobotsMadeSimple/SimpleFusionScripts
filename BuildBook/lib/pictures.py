@@ -30,6 +30,8 @@ def holder(manual, kind, pid):
     """(dict holding "camera" and "annotations", title) for a picture, or (None, "")."""
     if kind == "cover":
         return manual.setdefault("cover", model.new_picture(enabled=True)), "Cover"
+    if kind == "overview":
+        return manual.setdefault("overview", model.new_picture()), "Exploded view"
     if kind == "section":
         for si, sec in enumerate(manual["sections"], 1):
             if sec["id"] == pid:
@@ -64,6 +66,11 @@ def show(ctrl, manual, kind, pid, move_camera=True, frame=True):
         pic = sec.get("image", {}) if sec else {}
         if move_camera:
             capture.apply_camera(viewport, pic.get("camera") or (steps[-1].get("camera") if steps else None), False)
+    elif kind == "overview":                    # the whole assembly, every step's moves at once
+        ctrl.scene.show(design, manual, model.OVERVIEW_STEP)
+        if move_camera:
+            capture.apply_camera(viewport, manual.get("overview", {}).get("camera")
+                                 or manual.get("cover", {}).get("camera"), False)
     else:                                       # cover: the whole assembly
         ctrl.close_view()
         if move_camera:
@@ -124,7 +131,7 @@ def render_raw(ctrl, manual, kind, pid):
 
 def thumb_key(kind, pid):
     """Thumbnail name of a picture (steps: their id, as before)."""
-    return pid if kind == "step" else ("cover" if kind == "cover" else "section-" + pid)
+    return pid if kind == "step" else (kind if kind in ("cover", "overview") else "section-" + pid)
 
 
 def save_thumb(ctrl, kind, pid):

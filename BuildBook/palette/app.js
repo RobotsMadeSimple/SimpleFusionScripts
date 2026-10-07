@@ -36,7 +36,7 @@
 
   // Actions that open a Fusion dialog or only select: no busy bar (the reply
   // may not come until the dialog closes).
-  var NO_BUSY = ['pick', 'editLines', 'addExplode', 'editExplode', 'setAnchor', 'selectItems', 'hoverExplode',
+  var NO_BUSY = ['play', 'stopPlay', 'hoverExplode', 'pick', 'editLines', 'addExplode', 'editExplode', 'setAnchor', 'selectItems', 'hoverExplode',
                  'checkItems', 'exportManual', 'importManual', 'chooseExportFolder', 'openExportFolder', 'ready'];
 
   var ICON = {
@@ -53,6 +53,11 @@
     star: '<svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z"/></svg>',
     lock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>',
     unlock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.8-1"/></svg>',
+    play: '<svg viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg>',
+    playBack: '<svg viewBox="0 0 16 16"><path d="M11 3.5v9L4 8z" fill="currentColor"/></svg>',
+    record: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4" fill="#d9463e" stroke="none"/></svg>',
+    recordBack: '<svg viewBox="0 0 16 16"><circle cx="10" cy="8" r="3.5" fill="#d9463e" stroke="none"/><path d="M5.5 5v6L2 8z" fill="currentColor"/></svg>',
+    stop: '<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" fill="currentColor"/></svg>',
     plus: '<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>',
     details: '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3M5.5 8.5h5M5.5 11h3.5"/></svg>',
     parts: '<svg viewBox="0 0 16 16"><path d="M8 1.5 14 4.8v6.4L8 14.5 2 11.2V4.8z M2 4.8 8 8l6-3.2 M8 8v6.5"/></svg>',
@@ -182,8 +187,10 @@
     }).join('');
   }
 
+  var OVERVIEW = '__overview__';
   function stepById(id) {
     if (!state || !state.manual) return null;
+    if (id === OVERVIEW) return (state.manual.overview || {}).step || { id: OVERVIEW, title: 'Exploded view', items: [], explodes: [] };
     var found = null;
     state.manual.sections.forEach(function (sec) {
       sec.steps.forEach(function (st) { if (st.id === id) found = st; });
@@ -248,6 +255,15 @@
       ((cover.annotations || []).length ? ' \u00b7 ' + cover.annotations.length + ' note' + (cover.annotations.length === 1 ? '' : 's') : '');
     $('coverInfo').title = cover.camera ? '' : 'No view saved: the cover uses the current camera';
     $('btnCoverDeleteView').disabled = !cover.camera;
+    var ov = state.manual.overview || {};
+    $('setOverviewPic').checked = !!ov.enabled;
+    $('overviewActions').classList.toggle('hidden', !ov.enabled);
+    var ovThumb = state.thumbs && state.thumbs.overview;
+    $('overviewThumb').style.backgroundImage = ovThumb ? "url('" + ovThumb + "')" : '';
+    $('overviewThumb').textContent = ovThumb ? '' : 'No preview yet';
+    $('overviewInfo').textContent = (ov.camera ? '\u2713 View saved' : 'Uses the cover\u2019s view') +
+      ((ov.annotations || []).length ? ' \u00b7 ' + ov.annotations.length + ' note' + (ov.annotations.length === 1 ? '' : 's') : '');
+    $('btnOverviewDeleteView').disabled = !ov.camera;
     // Opening a step from the list shows it; switching steps with the keyboard stays put.
     if (state.currentStepId && state.currentStepId !== lastStepId && pendingOpen) {
       showTab('step');
@@ -302,6 +318,8 @@
 
   function renderTree() {
     renderThumbsMissing();
+    $('btnStopPlay').classList.toggle('hidden', !state.playing);
+    $('playBar').classList.toggle('playing', !!state.playing);
     var n = 0;
     var html = state.manual.sections.map(function (sec, si) {
       var views = 0;
@@ -337,6 +355,7 @@
           '<span class="tools">' +
             '<button data-act="secPicture" class="' + (sec.image && sec.image.enabled ? 'on' : '') +
               '" title="Section picture in the PDF (the assembly at the end of this section)">' + ICON.image + '</button>' +
+            '<button data-act="secPlay" title="Play this section\u2019s assembly (right-click for more)">' + ICON.play + '</button>' +
             '<button data-act="secUp" title="Move up">' + ICON.up + '</button>' +
             '<button data-act="secDown" title="Move down">' + ICON.down + '</button>' +
             '<button data-act="secDelete" class="danger" title="Delete section">' + ICON.close + '</button>' +
@@ -432,18 +451,41 @@
     var list = allSteps();
     var pos = -1;
     list.forEach(function (x, i) { if (step && x.step.id === step.id) pos = i; });
-    $('tabStep').innerHTML = step ? 'Step <span class="tab-count">' + (pos + 1) + '/' + list.length + '</span>' : 'Step';
+    var isOverview = !!step && step.id === OVERVIEW;
+    $('tabStep').innerHTML = isOverview ? 'Exploded view'
+      : step ? 'Step <span class="tab-count">' + (pos + 1) + '/' + list.length + '</span>' : 'Step';
     if (!step) return;
     renderStepBom(detail, step);
+    // The exploded view: only its parts and moves (its picture lives on the Export tab).
+    $('overviewCard').classList.toggle('hidden', !isOverview);
+    $('overviewInclude').checked = ((state.manual.overview || {}).includeSteps) !== false;
+    ['stepName', 'ctxEarlier', 'stepThumb', 'stepBom'].forEach(function (id) {
+      var card = $(id).closest('.card');
+      if (card) card.classList.toggle('hidden', isOverview);
+    });
+    $('btnStepAddStep').classList.toggle('hidden', isOverview);
 
-    var where = list[pos];
-    $('stepCrumb').textContent = where.section.title + ' · Step ' + where.ti;
+    var where = isOverview ? { section: { title: 'Whole assembly' }, ti: 0 } : list[pos];
+    $('stepCrumb').textContent = isOverview ? 'Whole assembly' : where.section.title + ' · Step ' + where.ti;
     $('btnStepAddStep').title = 'Add a step right after this one in ' + where.section.title;
-    $('stepTitle').textContent = step.title;
+    $('stepTitle').textContent = isOverview ? 'Exploded view' : step.title;
     $('btnPrevStep').disabled = pos <= 0;
     $('btnNextStep').disabled = pos >= list.length - 1;
     $('editBadge').classList.toggle('hidden', !state.edit);
     $('stepPrep').checked = !!step.prep;
+    var togetherDefault = (state.manual.settings.animation || {}).allAtOnce !== false;
+    $('stepTogether').options[0].text = 'Default (' + (togetherDefault ? 'all at once' : 'one after another') + ')';
+    $('stepTogether').value = step.together == null ? '' : (step.together ? '1' : '0');
+    // Trail lines: the step's own values over the ones in Settings.
+    var trailOwn = !!(step.trail && Object.keys(step.trail).length);
+    var look = Object.assign({}, state.manual.settings.trail || {}, step.trail || {});
+    $('stepTrailOverride').checked = trailOwn;
+    ['stepTrailColor', 'stepTrailWeight', 'stepTrailStyle'].forEach(function (id) { $(id).disabled = !trailOwn; });
+    $('stepTrailFields').classList.toggle('locked', !trailOwn);
+    $('stepTrailSum').textContent = trailOwn ? 'own' : 'as in Settings';
+    if (document.activeElement !== $('stepTrailColor')) $('stepTrailColor').value = look.color || '#404040';
+    if (document.activeElement !== $('stepTrailWeight')) $('stepTrailWeight').value = look.weight || 1.5;
+    $('stepTrailStyle').value = look.style || 'dashed';
     fillSelect($('ctxEarlier'), CONTEXT_STEP, step.earlier);
     fillSelect($('ctxLater'), CONTEXT_STEP, step.later);
     // Folded, the card still says what it's set to.
@@ -965,13 +1007,19 @@
   function explodeSummary(ex) {
     var n = ex.parts.length;
     var bits = [n + (n === 1 ? ' part' : ' parts')];
+    var amount = Math.abs(ex.distance) + ' ' + (state.units || '');
+    if (ex.distanceExpr) amount = ex.distanceExpr + ' (' + amount + ')';     // follows a Fusion parameter
     if (ex.kind === 'axis') {
-      bits.push((ex.distance < 0 ? '\u2212' : '+') + ex.axis + ' ' + Math.abs(ex.distance) + ' ' + (state.units || ''));
+      bits.push((ex.distance < 0 ? '\u2212' : '+') + ex.axis + ' ' + amount);
     } else {
-      bits.push(ex.direction + (ex.kind === 'xyz' ? '' : ' ' + Math.abs(ex.distance) + ' ' + (state.units || '')));
+      bits.push(ex.direction + (ex.kind === 'xyz' ? '' : ' ' + amount));
     }
     var spacing = SPACINGS.filter(function (s) { return s[0] === ex.spacing; })[0];
     if (spacing && ex.spacing !== 'uniform') bits.push(spacing[1].toLowerCase());
+    if (ex.base && ex.spacing !== 'uniform') {
+      bits.push('base ' + (ex.baseExpr ? ex.baseExpr + ' (' + ex.base + ' ' + (state.units || '') + ')' : ex.base + ' ' + (state.units || '')));
+    }
+    if (ex.exprError) bits.push('\u26a0 parameter not found');
     return bits.join(' \u00b7 ');
   }
 
@@ -1047,7 +1095,12 @@
     fillSelect($('setLater'), CONTEXT, s.later);
     fillSelect($('setUnassigned'), UNASSIGNED, s.unassigned);
     $('setGhost').value = s.ghostOpacity;
-    if (document.activeElement !== $('setDistance')) $('setDistance').value = state.manualDefault;
+    if (document.activeElement !== $('setDistance')) {
+      $('setDistance').value = state.manualDefaultExpr || state.manualDefault;
+      $('setDistance').title = state.manualDefaultExpr
+        ? 'Follows the parameter expression ' + state.manualDefaultExpr + ' (' + state.manualDefault + ' ' + (state.units || '') + ')'
+        : 'How far explode moves go when they have no distance of their own (every step). A Fusion parameter works too, e.g. bb_gap.';
+    }
     Array.prototype.forEach.call(document.querySelectorAll('[data-units]'), function (el) {
       el.textContent = state.units;
     });
@@ -1056,6 +1109,12 @@
     $('setTrailStyle').value = s.trail.style;
     $('setEdges').checked = !!s.drawEdges;
     $('setShortHw').checked = s.shortHardwareNames !== false;
+    var an = s.animation || {};
+    $('setAnimTogether').checked = an.allAtOnce !== false;
+    [['setAnimMove', 'moveSeconds'], ['setAnimCam', 'cameraSeconds'], ['setAnimPause', 'pauseSeconds'],
+     ['setAnimWidth', 'videoWidth'], ['setAnimFps', 'fps']].forEach(function (f) {
+      if (document.activeElement !== $(f[0])) $(f[0]).value = an[f[1]] != null ? an[f[1]] : '';
+    });
     $('btnUseDefaults').disabled = !state.myDefaults;
     $('btnClearDefaults').classList.toggle('hidden', !state.myDefaults);
     $('defaultsHint').textContent = state.myDefaults
@@ -1123,6 +1182,22 @@
   }
 
   function settings(patch) { send('setSettings', { settings: patch }); }
+  $('playBar').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-play]');
+    if (!b) return;
+    var kind = b.getAttribute('data-play');
+    send(kind.indexOf('record') === 0 ? 'record' : 'play', { scope: 'book', reverse: kind === 'reverse' || kind === 'recordReverse' });
+  });
+  $('btnStopPlay').addEventListener('click', function () { send('stopPlay'); });
+  [['setAnimMove', 'moveSeconds'], ['setAnimCam', 'cameraSeconds'], ['setAnimPause', 'pauseSeconds'],
+   ['setAnimWidth', 'videoWidth'], ['setAnimFps', 'fps']].forEach(function (f) {
+    $(f[0]).addEventListener('change', function (e) {
+      var v = parseFloat(e.target.value);
+      if (isNaN(v)) return;
+      var patch = {}; patch[f[1]] = v;
+      settings({ animation: patch });
+    });
+  });
   function branding(key, value) { send('setBranding', { key: key, value: value }); }
   $('setCompany').addEventListener('change', function (e) { branding('company', e.target.value.trim()); });
   $('setAuthor').addEventListener('change', function (e) { branding('author', e.target.value.trim()); });
@@ -1162,7 +1237,15 @@
   var pendingOpen = false;
   function openStep(id, switchTab) {
     pendingOpen = !!switchTab;
-    send('openStep', { id: id });
+    markStep(id);                   // at once, not after Fusion has finished moving the camera
+    // Sending waits until Fusion has drawn the step (the panel can't repaint meanwhile), so let
+    // the highlight paint first.
+    requestAnimationFrame(function () { setTimeout(function () { send('openStep', { id: id }); }, 0); });
+  }
+  function markStep(id) {
+    Array.prototype.forEach.call(document.querySelectorAll('#tree .step'), function (el) {
+      el.classList.toggle('active', el.getAttribute('data-step') === id);
+    });
   }
 
   function stepOffset(delta) {
@@ -1316,6 +1399,7 @@
     else if (act === 'addSection') send('addSection');
     else if (act === 'secUp') send('moveSection', { id: secId, delta: -1 });
     else if (act === 'secDown') send('moveSection', { id: secId, delta: 1 });
+    else if (act === 'secPlay') send('play', { scope: 'section', id: secId });
     else if (act === 'secDelete') armed(actEl, function () { send('deleteSection', { id: secId }); });
     else if (act === 'secPicture') {
       var sp = (state.manual.sections.filter(function (s) { return s.id === secId; })[0] || {}).image || {};
@@ -1572,7 +1656,9 @@
     trailOn: ICON.trailOn, trailOff: ICON.trailOff, anchor: ICON.anchor, unexplode: ICON.unexplode,
     bom: ICON.bomOff, split: ICON.split, remove: ICON.trash,
     edit: ICON.open, rename: ICON.edit, prep: ICON.parts, addBefore: ICON.plus, addAfter: ICON.plus,
-    up: ICON.up, down: ICON.down, delete: ICON.trash
+    up: ICON.up, down: ICON.down, delete: ICON.trash,
+    play: ICON.play, playBack: ICON.playBack, record: ICON.record,
+    secPlay: ICON.play, secPlayBack: ICON.playBack, secRecord: ICON.record, secRecordBack: ICON.recordBack
   };
   function closeItemMenu() { $('itemMenu').classList.add('hidden'); }
   $('items').addEventListener('contextmenu', function (e) {
@@ -1616,6 +1702,11 @@
     var act = b.getAttribute('data-ctx');
     closeItemMenu();
     if ($('itemMenu').getAttribute('data-mode') === 'step') { stepMenuAction(act, $('itemMenu').getAttribute('data-step')); return; }
+    if ($('itemMenu').getAttribute('data-mode') === 'section') {
+      var sid = $('itemMenu').getAttribute('data-step');
+      send(act.indexOf('Record') >= 0 ? 'record' : 'play', { scope: 'section', id: sid, reverse: /Back$/.test(act) });
+      return;
+    }
     if (act === 'trailOn') send('setTrail', { paths: paths, trail: true });
     else if (act === 'trailOff') send('setTrail', { paths: paths, trail: false });
     else if (act === 'anchor') send('setAnchor', { path: paths[0] });
@@ -1626,6 +1717,26 @@
   });
   // Steps tab: right-click a step for its options (same menu look as the parts list).
   $('tree').addEventListener('contextmenu', function (e) {
+    var head = e.target.closest('.section-head');
+    if (head) {
+      e.preventDefault();
+      var secId = head.closest('[data-section]').getAttribute('data-section');
+      var sec = state.manual.sections.filter(function (s) { return s.id === secId; })[0];
+      var m0 = $('itemMenu');
+      m0.innerHTML = '<div class="ctx-title">' + esc(sec.title) + '</div>' + [
+        ['secPlay', 'Play this section'], ['secPlayBack', 'Play it backwards'],
+        ['secRecord', 'Record this section'], ['secRecordBack', 'Record it backwards']
+      ].map(function (it) {
+        return '<button class="ctx-item" data-ctx="' + it[0] + '">' + (CTX_ICONS[it[0]] || '') + '<span>' + esc(it[1]) + '</span></button>';
+      }).join('');
+      m0.setAttribute('data-mode', 'section');
+      m0.setAttribute('data-step', secId);
+      m0.classList.remove('hidden');
+      var r0 = m0.getBoundingClientRect();
+      m0.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - r0.width - 4)) + 'px';
+      m0.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - r0.height - 4)) + 'px';
+      return;
+    }
     var row = e.target.closest('.step[data-step]');
     if (!row) return;
     e.preventDefault();
@@ -1639,6 +1750,10 @@
       ['prep', st.prep ? 'Not a preparation step' : 'Preparation step'],
       ['addBefore', 'Add a step before this one'],
       ['addAfter', 'Add a step after this one'],
+      null,
+      ['play', 'Play this step'],
+      ['playBack', 'Play it backwards'],
+      ['record', 'Record this step'],
       null,
       first ? false : ['up', 'Move up'],
       last ? false : ['down', 'Move down'],
@@ -1676,6 +1791,9 @@
       renameNewIn = { before: allSteps().map(function (x) { return x.step.id; }) };
       send('addStep', { sectionId: w.section.id, before: id });
     }
+    else if (act === 'play') send('play', { scope: 'step', id: id });
+    else if (act === 'playBack') send('play', { scope: 'step', id: id, reverse: true });
+    else if (act === 'record') send('record', { scope: 'step', id: id });
     else if (act === 'up') send('moveStep', { id: id, delta: -1 });
     else if (act === 'down') send('moveStep', { id: id, delta: 1 });
     else if (act === 'delete') send('deleteStep', { id: id });     // (Ctrl+Z brings it back)
@@ -1698,6 +1816,20 @@
   $('coverActions').addEventListener('click', function (e) {
     var b = e.target.closest('[data-pic]');
     if (b) send(b.getAttribute('data-pic'), { kind: 'cover' });
+  });
+  $('setOverviewPic').addEventListener('change', function (e) { send('pictureEnabled', { kind: 'overview', on: e.target.checked }); });
+  $('overviewActions').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-pic]');
+    if (b) send(b.getAttribute('data-pic'), { kind: 'overview' });
+  });
+  $('btnOverviewEdit').addEventListener('click', function (e) {
+    e.stopPropagation();
+    openStep(OVERVIEW, true);
+  });
+  $('overviewInclude').addEventListener('change', function (e) { send('setOverviewInclude', { on: e.target.checked }); });
+  $('btnOverviewDeleteView').addEventListener('click', function (e) {
+    e.stopPropagation();
+    armed(e.currentTarget, function () { send('pictureClearView', { kind: 'overview' }); });
   });
   $('btnExportAllTo').addEventListener('click', function () { send('exportAll', { ask: true }); });
   $('setShowFrame').addEventListener('change', function (e) { settings({ showCropFrame: e.target.checked }); });
@@ -1757,6 +1889,21 @@
   $('unassignedFilter').addEventListener('input', function () { if (state) renderUnassigned(); });
 
   $('stepPrep').addEventListener('change', function (e) { send('setPrep', { prep: e.target.checked }); });
+  $('stepTrailOverride').addEventListener('change', function (e) {
+    // On: start from the Settings look (then each change is the step's own). Off: back in sync.
+    var base = state.manual.settings.trail || {};
+    send('setStepTrail', { trail: e.target.checked ? { color: base.color, weight: base.weight, style: base.style } : null });
+  });
+  $('stepTrailColor').addEventListener('change', function (e) { send('setStepTrail', { trail: { color: e.target.value } }); });
+  $('stepTrailWeight').addEventListener('change', function (e) {
+    var v = parseFloat(e.target.value);
+    if (!isNaN(v)) send('setStepTrail', { trail: { weight: v } });
+  });
+  $('stepTrailStyle').addEventListener('change', function (e) { send('setStepTrail', { trail: { style: e.target.value } }); });
+  $('stepTogether').addEventListener('change', function (e) {
+    send('setTogether', { together: e.target.value === '' ? null : e.target.value === '1' });
+  });
+  $('setAnimTogether').addEventListener('change', function (e) { settings({ animation: { allAtOnce: e.target.checked } }); });
   $('ctxEarlier').addEventListener('change', function (e) { send('setContext', { earlier: e.target.value }); });
   $('ctxLater').addEventListener('change', function (e) { send('setContext', { later: e.target.value }); });
   $('notes').addEventListener('change', function (e) { send('setNotes', { notes: e.target.value }); });
@@ -1797,6 +1944,13 @@
           showFusionSelection(sel.paths || [], !!sel.ours);
         } else if (action === 'partMeshes') {
           gotPartMeshes(JSON.parse(data));
+        } else if (action === 'playingStep') {
+          // The animation moved on to a step: highlight it in the Steps tab (and the Step tab's
+          // badge follows when it stops, with the next full update).
+          var playId = JSON.parse(data).id;
+          markStep(playId);
+          var playRow = document.querySelector('#tree .step[data-step="' + playId + '"]');
+          if (playRow) playRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         } else if (action === 'logoPicked') {
           shrinkLogo(JSON.parse(data).url);
         } else if (action === 'compose') {

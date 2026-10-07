@@ -290,11 +290,14 @@ def build(data):
         for step in sec["steps"]:
             images[id(step)] = _image(step.get("image"))
     cover_image = _image(data.get("cover_image"))
+    overview_image = _image(data.get("overview_image"))
 
     # Contents: one line per section and per step. Work out how many pages it needs first,
     # so the page numbers of everything after it are known when it's drawn. With a cover
     # picture, the contents start on the page after the cover.
     toc = []
+    if overview_image is not None:
+        toc.append(("overview", None))
     for sec in data["sections"]:
         toc.append(("section", sec))
         toc.extend(("step", st) for st in sec["steps"])
@@ -310,6 +313,14 @@ def build(data):
     starts = {}                     # id(section / step) or "bom" -> page number (1-based)
 
     flow = _Flow(doc)
+    if overview_image is not None:
+        flow.new_page()
+        starts["overview"] = len(doc.pages)
+        flow.page.text(MARGIN, flow.y - 22, "Exploded view", 22, True, INK)
+        flow.y -= 30
+        flow.page.line(MARGIN, flow.y + 2, MARGIN + CONTENT_W, flow.y + 2, 1.2, ACCENT)
+        flow.y -= 14
+        _picture(flow, overview_image, data.get("overview_annotations"), flow.room())
     for sec in data["sections"]:
         # The section's own page: its title, its picture, its parts; its steps start on the next page.
         flow.new_page()
@@ -418,6 +429,9 @@ def _cover(pages, data, title, toc, starts, image=None):
         elif kind == "step":
             label, size, bold, indent = "{}  {}".format(item["number"], item["title"] or "Untitled step"), 9.5, False, 16
             page_no = starts.get(id(item))
+        elif kind == "overview":
+            label, size, bold, indent = "Exploded view", 10.5, True, 0
+            page_no = starts.get("overview")
         else:
             label, size, bold, indent = "Full parts list", 10.5, True, 0
             page_no = starts.get("bom")

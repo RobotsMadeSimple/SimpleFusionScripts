@@ -11,6 +11,8 @@ but one of its descendants should still show, that descendant is drawn as a
 solid custom-graphics copy in place.
 """
 
+import time
+
 import adsk.core
 import adsk.fusion
 
@@ -23,6 +25,7 @@ PREVIEW_COLOR = (70, 130, 230)
 PREVIEW_OPACITY = 0.55
 GHOST_COLOR = (205, 205, 205)
 HIGHLIGHT_COLOR = (0, 120, 215)     # checked parts, like Fusion's selection blue
+EDIT_EDGE_LIMIT = 6000          # edge points above which the explode dialog skips a body's edges
 HOVER_COLOR = (0, 200, 255)         # explode dialog: the copy under the cursor (what a click picks)
 TRAIL_OFF_COLOR = (160, 160, 160)   # hidden trail lines, only drawn while editing lines
 TRAIL_HOVER_COLOR = (255, 120, 0)
@@ -113,7 +116,7 @@ class Scene:
         self._mesh_cache.clear()
         self._edge_cache.clear()
 
-    def show(self, design, manual, step_id, edit=False, current=None, upto=None, hover=None):
+    def show(self, design, manual, step_id, edit=False, current=None, upto=None, hover=None, light=False):
         """Render a step, running its explode moves in order.
 
         `upto` stops after that explode move (the panel's "state up to this
@@ -126,6 +129,7 @@ class Scene:
         # frame. _apply_visibility checks the real light bulbs instead (Fusion's preview
         # rollback can change them behind our back) and only switches what differs.
         _, step = model.find_step(manual, step_id)
+        step = model.effective_step(manual, step)       # (the exploded view: every step's moves too)
         if step is None:
             self._reset(restore=False)
             self._restore_visibility()
@@ -135,6 +139,7 @@ class Scene:
         self.edit = edit
         self.upto = upto if model.find_explode(step, upto) else None
 
+        self.light = light              # while the explode arrow is dragged: no edges on other parts
         with log.timed("scene.show " + step["title"]):
             self.hover = hover          # a part (path) whose copies draw highlighted
             self._render(design, manual, step, edit, set(current or ()))
@@ -166,6 +171,19 @@ class Scene:
         self._copy_groups = {}
         self.copy_places = []
         self._bodies = []
+        self._made = []             # entities drawn by the latest _draw_bodies call
+        self._anim = []             # (occurrence, owner paths, its drawn entities): set_progress moves them
+        self._anim_moves = {}       # owner path -> [(world vector, index of its move)]
+        self.anim_moves = 0         # moves in the step shown (set_progress runs 0 .. this)
+        self._anim_order = {}       # explode id -> its index (trail lines grow with their move)
+        self._anim_p = None         # set_progress's last p, offsets per copy and trail fractions
+        self._anim_last = {}
+        self._anim_trail = {}
+        self._anim_base = {}        # copy index -> (its placement as an array, translation x, y, z)
+        self._edges_off = set()     # copy indices whose edge lines are hidden while they move
+        self._fast = None           # what the last render worked out, for update_offsets
+        self.fast_stats = ""
+        self.anim_stats = (0, 0.0, 0, 0.0)
         self.lines_editing = False
         if restore:
             self._restore_visibility()
@@ -280,10 +298,15 @@ class Scene:
         # removes what the previous preview drew, so there's nothing to move in place.)
         self._reset(restore=False)
         self.segments, self.copy_places = segments, places
+        order = {ex["id"]: k for k, ex in enumerate(step.get("explodes", []))}
+        self._anim_moves = {p: [(vec, order.get(eid, 0)) for vec, _, eid in e["moves"]]
+                            for p, e in current.items()}
+        self.anim_moves = (order.get(self.upto, len(order) - 1) + 1) if order else 0
+        self._anim_order = order
         self._group = design.rootComponent.customGraphicsGroups.add()
         self._group.id = GROUP_ID
         ghost = self._ghost_effect(settings)
-        draw_edges = settings.get("drawEdges", True)
+        draw_edges = settings.get("drawEdges", True) and not getattr(self, "light", False)
 
         drawn = 0
         for occ, bodies, desired, offset in plans:
@@ -291,11 +314,20 @@ class Scene:
             hidden_by_parent = any(a in hide_paths for a in _ancestors(path))
             if desired in ("exploded", PREVIEW) and self.hover and model.is_self_or_ancestor(self.hover, path):
                 # Under the cursor in the explode dialog: bright, outlined (PREVIEW draws the outline).
+                self._made = []
                 drawn += self._draw_bodies(occ, bodies, offset, PREVIEW, None, False, outline=(HOVER_COLOR, 3.0))
+                owners = [p for p in [*_ancestors(path), path] if p in current]
+                self._anim.append((occ, owners, list(self._made)))
             elif desired == "exploded":
+                self._made = []
                 drawn += self._draw_bodies(occ, bodies, offset, SOLID, None, draw_edges)
+                owners = [p for p in [*_ancestors(path), path] if p in current]
+                self._anim.append((occ, owners, list(self._made)))
             elif desired == PREVIEW:
+                self._made = []
                 drawn += self._draw_bodies(occ, bodies, offset, PREVIEW, None, False, outline=(HIGHLIGHT_COLOR, 2.0))
+                owners = [p for p in [*_ancestors(path), path] if p in current]
+                self._anim.append((occ, owners, list(self._made)))
             elif desired == model.GHOSTED:
                 drawn += self._draw_bodies(occ, bodies, offset, GHOST, ghost, False)
             elif desired == model.SHOWN and hidden_by_parent:
@@ -305,14 +337,114 @@ class Scene:
             for body in root_bodies:
                 drawn += self._draw_bodies(None, [body], (0.0, 0.0, 0.0), GHOST, ghost, False)
 
-        self._draw_trails(settings)
+        self._draw_trails(dict(settings, trail=model.trail_look(manual, step)))
 
         # Hide last, after every query that depends on visibility. Only the top
         # of each hidden branch needs its light bulb off.
         shown, hidden = self._apply_visibility(hide_top, hide_bodies)
+        self._fast = {"step_id": step["id"], "occs": occs, "centers": centers, "anchors": anchors,
+                      "hide_top": hide_top, "hide_bodies": hide_bodies,
+                      "moving": {p for p, e in current.items() if not explode.is_zero(e["world"])}}
 
         log.info("scene: {} occurrences, {} drawn bodies, {} hidden ({} turned on, {} turned off), {} trails".format(
             len(plans), drawn, len(self._hidden_occs), shown, hidden, len(self.segments)))
+
+    def set_progress(self, p, together=False, fast=True):
+        """Animation: put the drawn copies where they are `p` moves into the step (0 = assembled,
+        anim_moves = fully exploded; a fraction is part way along that move), and grow / shrink
+        each trail line with its move. Only what changed since the last frame is touched (setting
+        every copy's position each frame made steps with many parts lag)."""
+        if together and self.anim_moves:
+            # All the moves at once: each is the same fraction of the way, p / moves.
+            frac = min(1.0, max(0.0, p / float(self.anim_moves)))
+            amount = lambda k: frac                                     # noqa: E731
+        else:
+            amount = lambda k: min(1.0, max(0.0, p - k))                # noqa: E731
+        if (p, together) == self._anim_p:
+            self._show_edges(set())         # (paused: every part's edges back)
+            return
+        self._anim_p = (p, together)
+        moving = set()
+        t0 = time.perf_counter()
+        moved = 0
+        for i, (occ, owners, entities) in enumerate(self._anim):
+            offset = (0.0, 0.0, 0.0)
+            for owner in owners:
+                for vec, k in self._anim_moves.get(owner, ()):
+                    f = amount(k)
+                    if f > 0:
+                        offset = explode.add(offset, explode.scale(vec, f))
+            key = tuple(round(v, 5) for v in offset)
+            if self._anim_last.get(i) == key:
+                continue
+            moving.add(i)
+            self._anim_last[i] = key
+            # The occurrence's own placement is read once per step (reading it is slow for parts
+            # deep in sub-assemblies), then only the offset changes.
+            base = self._anim_base.get(i)
+            if base is None:
+                m = occ.transform2 if occ is not None else adsk.core.Matrix3D.create()
+                base = self._anim_base[i] = (m.asArray(), m.translation.x, m.translation.y, m.translation.z)
+            matrix = adsk.core.Matrix3D.create()
+            matrix.setWithArray(base[0])
+            matrix.translation = adsk.core.Vector3D.create(base[1] + offset[0], base[2] + offset[1], base[3] + offset[2])
+            for entity in entities:
+                try:
+                    entity.transform = matrix
+                    moved += 1
+                except Exception:
+                    pass
+        self._show_edges(moving if fast else set())        # (a recording keeps every edge)
+        t1 = time.perf_counter()
+        trails = 0
+        style = self._trail_settings.get("style", "dashed")
+        dash = getattr(self, "_dash", 0.25)
+        homes = {}                      # (together) each part's first trail start: the lines scale from there
+        if together:
+            for seg in sorted(self.segments.values(), key=lambda s: self._anim_order.get(s["explode"], 0)):
+                homes.setdefault(seg["path"], seg["start"])
+        for seg_id, lines in self._segment_entities.items():
+            seg = self.segments.get(seg_id)
+            if seg is None:
+                continue
+            f = round(amount(self._anim_order.get(seg["explode"], 0)), 4)
+            if self._anim_trail.get(seg_id) == f:
+                continue
+            self._anim_trail[seg_id] = f
+            try:
+                if f <= 0:
+                    lines.isVisible = False
+                    continue
+                start = seg["start"]
+                end = explode.add(start, explode.scale(explode.sub(seg["end"], start), f))
+                if together:            # every earlier move is part way too: scale from home
+                    home = homes.get(seg["path"], start)
+                    start = explode.add(home, explode.scale(explode.sub(seg["start"], home), f))
+                    end = explode.add(home, explode.scale(explode.sub(seg["end"], home), f))
+                lines.coordinates.coordinates = dash_coords(start, end, style, dash)
+                lines.isVisible = True
+                trails += 1
+            except Exception:
+                log.error("animate trail line")
+        self.anim_stats = (moved, (t1 - t0) * 1000, trails, (time.perf_counter() - t1) * 1000)
+
+    def show_all_edges(self):
+        self._show_edges(set())
+
+    def _show_edges(self, moving):
+        """Edge lines of parts on the move are hidden until they stop: Fusion redraws a moved copy's
+        edges from scratch every frame, and parts with many edges (gear teeth, racks) took ~100 ms
+        a frame. Their shaded faces still move smoothly."""
+        for i in self._edges_off - moving:
+            for lines in self._anim_edges(i):
+                lines.isVisible = True
+        for i in moving - self._edges_off:
+            for lines in self._anim_edges(i):
+                lines.isVisible = False
+        self._edges_off = set(moving)
+
+    def _anim_edges(self, i):
+        return [e for e in self._anim[i][2] if e.objectType == adsk.fusion.CustomGraphicsLines.classType()]
 
     def _user_visible(self, occ):
         """Visible as the user left it: light bulbs we switched off ourselves don't count."""
@@ -452,15 +584,24 @@ class Scene:
             entity = target.addMesh(
                 adsk.fusion.CustomGraphicsCoordinates.create(coords), indices, normals, indices)
             entity.transform = matrix
+            self._made.append(entity)
             entity.isSelectable = pickable
             if occ is not None:
                 entity.id = occ.fullPathName
+            # The explode dialog draws no edge lines at all: they were most of each redraw's cost, and
+            # Fusion redraws there on every change. Picked parts are tinted blue instead of outlined.
+            # Pictures and normal step views keep every edge.
+            heavy = self.edit
+            if heavy and style == PREVIEW:
+                tint = _color(outline[0] or HIGHLIGHT_COLOR)
+                effect = adsk.fusion.CustomGraphicsBasicMaterialColorEffect.create(
+                    tint, tint, _color((255, 255, 255)), _color((0, 0, 0)), 20.0, 1.0)
             entity.color = effect if effect is not None else self._appearance_effect(occ, body)
             if occ is not None and style != GHOST:
                 self._bodies.append((occ.fullPathName, entity, entity.color))
             count += 1
 
-            if style == PREVIEW:
+            if style == PREVIEW and not heavy:
                 # The move being edited: shaded, edges in selection blue so its parts read as picked
                 # (cyan and thicker for the one under the cursor).
                 edges = self._edges(native)
@@ -468,21 +609,27 @@ class Scene:
                     lines = target.addLines(
                         adsk.fusion.CustomGraphicsCoordinates.create(edges[0]), [], True, edges[1])
                     lines.transform = matrix
+                    self._made.append(lines)
                     lines.isSelectable = False
                     lines.weight = outline[1]
                     lines.depthPriority = 1
                     lines.color = adsk.fusion.CustomGraphicsSolidColorEffect.create(_color(outline[0] or HIGHLIGHT_COLOR))
-            if draw_edges and style == SOLID:
+            if draw_edges and style == SOLID and not heavy:
                 edges = self._edges(native)
                 if edges and edges[1]:
                     lines = target.addLines(
                         adsk.fusion.CustomGraphicsCoordinates.create(edges[0]), [], True, edges[1])
                     lines.transform = matrix
+                    self._made.append(lines)
                     lines.isSelectable = False
                     lines.weight = 1.0
                     lines.depthPriority = 1
                     lines.color = adsk.fusion.CustomGraphicsSolidColorEffect.create(_color(EDGE_COLOR))
         return count
+
+    def _edge_points(self, native):
+        edges = self._edges(native)
+        return len(edges[0]) // 3 if edges else 0
 
     def _appearance_effect(self, occ, body):
         appearance = None
@@ -654,6 +801,98 @@ class Scene:
         """Edit lines: make hidden (faint) lines clickable or not."""
         self.pick_hidden = bool(flag)     # (the line editor's click search includes hidden lines)
 
+    def update_offsets(self, manual, step_id):
+        """Explode dialog, dragging the arrow: move the drawn copies and trail lines to the new
+        distance instead of drawing the whole step again (that took ~0.4 s a frame on big steps).
+        Only when nothing but distances changed; returns False when a full redraw is needed."""
+        fast = self._fast
+        if not fast or fast["step_id"] != step_id or self._group is None or not self._group.isValid:
+            return self._no("nothing drawn to move" if not fast else "drawing gone")
+        t = [time.perf_counter()]
+        _, step = model.find_step(manual, step_id)
+        step = model.effective_step(manual, step)
+        if step is None:
+            return self._no("no step")
+        moves = model.evaluate(manual, step, fast["centers"], self.upto)
+        current = {path: _entry(occ, moves.get(path, [])) for path, occ in fast["occs"].items()}
+        if {p for p, e in current.items() if not explode.is_zero(e["world"])} != fast["moving"]:
+            return self._no("a part starts / stops moving")
+        t.append(time.perf_counter())
+        segments = self._trail_segments(current, fast["anchors"])
+        if set(segments) != set(self.segments):
+            return self._no("trail lines changed")
+        t.append(time.perf_counter())
+        moved = set()
+        for i, (occ, owners, entities) in enumerate(self._anim):
+            offset = (0.0, 0.0, 0.0)
+            for owner in owners:
+                offset = explode.add(offset, current[owner]["world"])
+            key = tuple(round(v, 6) for v in offset)
+            if self._anim_last.get(i) == key:
+                continue
+            if i in self._anim_last:
+                moved.add(i)
+            self._anim_last[i] = key
+            matrix = self._placement(occ, offset)
+            for entity in entities:
+                try:
+                    entity.transform = matrix
+                except Exception:
+                    return self._no("a copy can't be moved")
+        style = self._trail_settings.get("style", "dashed")
+        dash = getattr(self, "_dash", 0.25)
+        for seg_id, seg in segments.items():
+            entity = self._segment_entities.get(seg_id)
+            old = self.segments.get(seg_id)
+            if entity is None or old is None or (old["start"], old["end"]) == (seg["start"], seg["end"]):
+                continue
+            try:
+                entity.coordinates.coordinates = dash_coords(seg["start"], seg["end"], style, dash)
+            except Exception:
+                return self._no("a trail line can't be moved")
+        for seg_id, seg in segments.items():
+            seg["on"] = self.segments[seg_id].get("on", seg["on"])
+        self.segments = segments
+        # The moving parts' edges are hidden until the drag ends (Fusion redraws a moved part's
+        # edges from scratch every frame: most of the time of each step of the drag).
+        self._show_edges(moved | self._edges_off)     # (back with show_all_edges when the drag ends)
+        t.append(time.perf_counter())
+        # Fusion's preview rollback switches parts back on: hide the same ones again (only what differs).
+        shown, hidden = self._apply_visibility(fast["hide_top"], fast["hide_bodies"])
+        t.append(time.perf_counter())
+        self.fast_stats = "moves {:.0f}, trail points {:.0f}, copies+lines {:.0f}, visibility {:.0f} ({} re-hidden)".format(
+            *[(b - a) * 1000 for a, b in zip(t, t[1:])], hidden)
+        return True
+
+    def _no(self, why):
+        if why != getattr(self, "_no_logged", None):
+            self._no_logged = why
+            log.info("explode: full redraw ({})".format(why))
+        return False
+
+    def tint_hover(self, path):
+        """Explode dialog: the drawn copies of `path` (a part or assembly) turn cyan, the rest back
+        to their own colour. Colours only (no redraw); the next redraw keeps it (self.hover)."""
+        self.hover = path
+        cyan = adsk.fusion.CustomGraphicsBasicMaterialColorEffect.create(
+            _color(HOVER_COLOR), _color(HOVER_COLOR), _color((255, 255, 255)), _color((0, 0, 0)), 30.0, 1.0)
+        for leaf, entity, normal in self._bodies:
+            try:
+                if entity.isValid:
+                    entity.color = cyan if path and model.is_self_or_ancestor(path, leaf) else normal
+            except Exception:
+                pass
+
+    def highlight_trails(self, explode_id):
+        """Trail lines of one move drawn highlighted (None: all back to normal)."""
+        for seg_id, entity in self._segment_entities.items():
+            seg = self.segments.get(seg_id)
+            if seg is None or not entity.isValid:
+                continue
+            want = "hover" if explode_id is not None and seg["explode"] == explode_id else "on"
+            if self._segment_states.get(seg_id) != want:
+                self._style(entity, want)
+
     def style_segment(self, seg_id, state):
         entity = self._segment_entities.get(seg_id)
         if entity is not None and entity.isValid:
@@ -698,7 +937,8 @@ def dash_coords(start, end, style, dash):
     return out
 
 
-def sweep(design, everything=False, ids=(GROUP_ID, CROP_GROUP_ID, "BuildBookAnchor", "BuildBookPickHighlight")):
+def sweep(design, everything=False, ids=(GROUP_ID, CROP_GROUP_ID, "BuildBookAnchor", "BuildBookPickHighlight",
+                                         "BuildBookBoxSelect")):
     """Delete BuildBook's custom-graphics groups in a design (all groups with `everything`).
 
     Returns how many were removed. `everything` is for leftovers from before

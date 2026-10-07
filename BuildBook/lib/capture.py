@@ -80,7 +80,7 @@ def describe_camera(data):
         *e, *t, dist, "ortho" if data.get("type") == int(adsk.core.CameraTypes.OrthographicCameraType) else "persp", data.get("extents") or 0)
 
 
-def apply_camera(viewport, data, smooth=True):
+def apply_camera(viewport, data, smooth=True, quiet=False):
     """Move the viewport to a stored camera. Returns False if there's none."""
     if not data:
         return False
@@ -101,7 +101,7 @@ def apply_camera(viewport, data, smooth=True):
     cam.isFitView = False
     cam.isSmoothTransition = smooth
     viewport.camera = cam               # (the saved zoom is already right: see current_camera)
-    if not smooth:
+    if not smooth and not quiet:
         try:
             log.info("view applied: asked " + describe_camera(data) + " / got " + describe_camera(camera_to_dict(viewport.camera)))
         except Exception:
@@ -308,7 +308,7 @@ def thumbnail_urls(app, manual):
     panel reloads changes)."""
     out = {}
     keys = [step["id"] for _, step in model.ordered_steps(manual)]
-    keys += ["section-" + sec["id"] for sec in manual["sections"]] + ["cover"]
+    keys += ["section-" + sec["id"] for sec in manual["sections"]] + ["cover", "overview"]
     for key in keys:
         path = thumbnail_path(app, key)
         if os.path.exists(path):

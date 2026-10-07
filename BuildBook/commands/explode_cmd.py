@@ -16,6 +16,7 @@ Cancel saves nothing. Nothing in the model moves.
 """
 
 import copy
+import json
 import os
 import re
 import time
@@ -24,7 +25,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from ..lib import explode, log, model, paths, refs
+from ..lib import boxselect, explode, log, model, params, paths, refs
 
 CMD_ID = "buildBookExplode"
 AFTER_DRAG_EVENT = "buildBookExplodeAfterDrag"   # custom event: refill the box once a drag is done
@@ -68,6 +69,13 @@ class ExplodeCommand:
         self.dragged = False         # the arrow was dragged since the last mouse up
         self.mouse_down_at = 0.0     # last mouse press in the canvas (copy clicks vs. the box's own removals)
         self.mouse_down_pos = None   # where the left button went down (a release nearby = a click)
+        self.box = boxselect.Box()   # drag-box picking
+        self.status_text = None
+        self.fast_key = None         # layout_key of the last full drawing
+        self.activated = False       # the dialog's first activation (later ones: after navigating)
+        self.last_input, self.last_input_at = None, 0.0
+        self.any_button = False      # a mouse button is down (panning / orbiting: no hover redraws)
+        self.hover_at = 0.0
         self.drawn_logged = None
         self.distance_touched = False
         self.dir_hidden = []         # parts hidden with H while picking a direction
@@ -171,10 +179,25 @@ class ExplodeCommand:
         ex["name"] = self._input(adsk.core.StringValueCommandInput, "name").value.strip()
         ex["direction"] = self.direction_from_inputs()
         ex["spacing"] = self.spacing()
+        base_in = self._input(adsk.core.DistanceValueCommandInput, "base")
+        ex["base"] = abs(base_in.value) if base_in is not None and ex["spacing"] != model.UNIFORM else 0.0
+        base_text = _expression(base_in) if base_in is not None else ""
+        if ex["spacing"] != model.UNIFORM and params.is_expression(base_text):
+            ex["baseExpr"] = base_text
+        else:
+            ex.pop("baseExpr", None)
+        dist_in = self._input(adsk.core.DistanceValueCommandInput, "distance")
         if ex["direction"]["kind"] == model.DIR_XYZ or self.follows_default():
             ex["distance"] = None
+            ex.pop("distanceExpr", None)
         else:
-            ex["distance"] = abs(self._input(adsk.core.DistanceValueCommandInput, "distance").value)
+            ex["distance"] = abs(dist_in.value)
+            # A parameter expression is kept (worked out again whenever the manual loads).
+            text = _expression(dist_in)
+            if params.is_expression(text):
+                ex["distanceExpr"] = text
+            else:
+                ex.pop("distanceExpr", None)
         old = {p["ref"].get("path"): p for p in ex["parts"]}
         ex["parts"] = [old.get(path) or model.new_explode_part(refs.make_ref(occ))
                        for path, occ in self.picked.items() if occ.isValid]
@@ -209,6 +232,7 @@ class ExplodeCommand:
 
     def positions_before(self, tmp, tstep, occs):
         """World centres of `occs` after every move before the working one."""
+        tstep = model.effective_step(tmp, tstep)        # (the exploded view: after every step's moves)
         index = next(i for i, ex in enumerate(tstep["explodes"]) if ex["id"] == self.working["id"])
         earlier = dict(tstep, explodes=tstep["explodes"][:index])
         centers = {o.fullPathName: refs.bbox_center(o) for o in occs}
@@ -223,9 +247,14 @@ class ExplodeCommand:
 
     def refresh(self, preview=True):
         """Update arrow, visibility of inputs and status; redraw the canvas."""
+        tt = [time.perf_counter()]
         manual, step = self._step()
         tmp, tstep = self.sequence(manual, step)
+        tt.append(time.perf_counter())
         xyz = self.axis_choice() == XYZ
+        base_in = self._input(adsk.core.DistanceValueCommandInput, "base")
+        if base_in is not None:
+            base_in.isVisible = self.spacing() != model.UNIFORM      # (only the stacked spacings use it)
         for i in XYZ_INPUTS:
             self.inputs.itemById(i).isVisible = xyz
         along = self._input(adsk.core.SelectionCommandInput, "dirEntity")
@@ -252,7 +281,9 @@ class ExplodeCommand:
             if why != self.arrow_off_reason:
                 self.arrow_off_reason = why
                 log.info("explode: arrow hidden ({})".format(why))
+        tt.append(time.perf_counter())
         self.update_status(tstep)
+        tt.append(time.perf_counter())
         if preview and self.picking_direction():
             # Picking "Along": the whole model as built (lines on other parts too), minus the
             # parts hidden with H to reach inside. Applied each preview (rolled back with it).
@@ -268,8 +299,28 @@ class ExplodeCommand:
         if preview:
             if self.dir_hidden and not self.picking_direction():
                 self.dir_hidden = []            # a direction was picked: those parts come back
+            # Only the distance changed since the last full drawing (the arrow being dragged): move
+            # what's drawn instead of drawing the whole step again.
+            key = self.layout_key()
+            tt.append(time.perf_counter())
+            if key != self.fast_key and self.fast_key is not None and self.dragging_until > time.perf_counter():
+                log.info("explode: full redraw (layout changed while dragging)")
+            if key == self.fast_key and self.ctrl.scene.update_offsets(tmp, self.step_id):
+                tt.append(time.perf_counter())
+                tt.append(time.perf_counter())      # (no extra refresh: Fusion redraws after the preview)
+                ms = (tt[-1] - tt[0]) * 1000
+                if ms > 60:
+                    parts = ["load+copy", "arrow", "status", "key", "move", "redraw"]
+                    log.info("explode: quick update {:.0f} ms ({}; inside move: {})".format(ms, ", ".join(
+                        "{} {:.0f}".format(n, (b - a) * 1000) for n, a, b in zip(parts, tt, tt[1:])),
+                        self.ctrl.scene.fast_stats))
+                return
+            # While the arrow is being dragged a full drawing leaves out the edge lines (most of
+            # its cost); the drawing when the drag ends puts them back.
+            light = time.perf_counter() < self.dragging_until
             self.ctrl.scene.show(self.ctrl.design(), tmp, self.step_id, edit=True,
-                                 current=set(self.picked), upto=self.working["id"], hover=self.hover)
+                                 current=set(self.picked), upto=self.working["id"], hover=self.hover, light=light)
+            self.fast_key = None if light else key      # (a light drawing is never moved in place)
             self.sync_box()             # the new copies stand for the moved parts in the box
             try:
                 drawn = (round(self._input(adsk.core.DistanceValueCommandInput, "distance").value, 4),
@@ -280,6 +331,17 @@ class ExplodeCommand:
             except Exception:
                 pass
             self.ctrl.app.activeViewport.refresh()
+
+    def layout_key(self):
+        """Everything that changes what's drawn, apart from distances (those update in place)."""
+        ex = self.working_state()
+        for k in ("distance", "distanceExpr", "base", "baseExpr", "name"):
+            ex.pop(k, None)
+        direction = dict(ex.get("direction") or {})
+        direction.pop("flip", None)
+        ex["direction"] = direction
+        return json.dumps([ex, sorted(self.picked), self.hover, len(self.pending),
+                           [p.get("id") for p in self.pending]], sort_keys=True, default=str)
 
     def picking_direction(self):
         """Direction "Picked" with nothing picked yet: the user is choosing a line / face."""
@@ -317,8 +379,8 @@ class ExplodeCommand:
     def update_status(self, tstep):
         status = self._input(adsk.core.TextBoxCommandInput, "status")
         if self.picking_direction():
-            status.formattedText = ("Pick an <b>edge, face or axis</b> to move along (any part: the whole model "
-                                    "is shown). Hover a part + <b>H</b> hides it, <b>U</b> brings it back.")
+            self._set_status(status, "Pick an <b>edge, face or axis</b> to move along (any part: the whole model "
+                                     "is shown). Hover a part + <b>H</b> hides it, <b>U</b> brings it back.")
             return
         position = next(i for i, ex in enumerate(tstep["explodes"]) if ex["id"] == self.working["id"]) + 1
         n = len(self.picked)
@@ -328,7 +390,14 @@ class ExplodeCommand:
             text += " &nbsp;·&nbsp; {} more move(s) ready to save".format(len(self.pending))
         text += ("<br>Click a part (or its copy) to add it; click a copy outlined in <b>blue</b> to take "
                  "it out. Drag the arrow to set the distance.")
-        status.formattedText = text
+        self._set_status(status, text)
+
+    def _set_status(self, status, text):
+        """Only when the words change: setting the text counts as an input change, so Fusion runs
+        the preview again, which set the text again... (a redraw loop, ~3 a second)."""
+        if text != self.status_text:
+            self.status_text = text
+            status.formattedText = text
 
     # ------------------------------------------------------------ actions
 
@@ -356,18 +425,26 @@ class ExplodeCommand:
         return best
 
     def hover_copy(self, pos):
-        """Mouse moved: the copy under the cursor draws highlighted (what a click takes out of the
-        move). One redraw each time the cursor moves onto / off a copy; nothing in between (the
-        status text stays put: changing it on every move re-ran the preview)."""
-        if time.perf_counter() < self.dragging_until or self.mouse_down_pos is not None \
+        """Mouse moved: the copy under the cursor turns cyan (what a click takes out of the move).
+        Only its colour changes (a full redraw each time made panning crawl: copies sliding under
+        the cursor kept redrawing the step), and nothing while the view is moving."""
+        now = time.perf_counter()
+        if now < self.dragging_until or self.mouse_down_pos is not None or self.any_button \
                 or self.picking_direction():
-            return                          # (dragging the arrow / orbiting / picking "Along")
-        leaf = self.copy_at(pos)
-        unit = self.path_for_graphics(leaf) if leaf else None
+            return                          # (dragging the arrow / panning / orbiting / picking "Along")
+        if now - self.hover_at < 0.05 or now - getattr(self.ctrl, "camera_moved_at", 0.0) < 0.3:
+            return                          # (at most every 50 ms; not while panning / orbiting)
+        self.hover_at = now
+        try:
+            kind, under = self.pick_under(pos)
+        except Exception:
+            kind, under = None, None
+        unit = self.path_for_graphics(under) if kind == "copy" else None
         if unit == self.hover:
             return
         self.hover = unit
-        self.redraw()
+        self.ctrl.scene.tint_hover(unit)
+        self.ctrl.app.activeViewport.refresh()
 
     def redraw(self):
         """Run a preview now. doExecutePreview from a mouse event is ignored; a changed input
@@ -403,6 +480,57 @@ class ExplodeCommand:
 
         return refs.body_at(self.ctrl.app.activeViewport, self.ctrl.design(), pos, shown)
 
+    def pick_under(self, pos):
+        """What's really under the cursor, nearest first: ("copy", path) for a drawn copy of a moved
+        part, ("part", body) for a real part, or (None, None). Copies are tested with the view ray
+        shifted back by their offset against the real (hidden) part, so a click lands on the copy's
+        actual shape, not just inside its box (the box test picked a part behind or beside it)."""
+        viewport, design = self.ctrl.app.activeViewport, self.ctrl.design()
+        origin, d = refs.view_ray(viewport, pos)
+        best = (None, None, None)
+        body, dist = refs.ray_nearest(design, origin, d, self._shown())
+        if body is not None:
+            best = (dist, "part", body)
+        for path, occ, off in self.ctrl.scene.copy_places:
+            try:
+                l, t, r, b = boxselect.screen_box(viewport, occ.boundingBox, off)
+            except Exception:
+                continue
+            if not (l - 3 <= pos.x <= r + 3 and t - 3 <= pos.y <= b + 3):
+                continue                    # (cheap: only copies whose box is under the cursor)
+            shifted = origin.copy()
+            shifted.translateBy(adsk.core.Vector3D.create(-off[0], -off[1], -off[2]))
+            if isinstance(occ, refs.BodyPart):
+                home, name = occ.occ.fullPathName, occ.body.name
+                accept = (lambda bd, home=home, name=name: bd.assemblyContext is not None
+                          and bd.assemblyContext.fullPathName == home and bd.name == name)
+            else:
+                prefix = occ.fullPathName
+                accept = (lambda bd, prefix=prefix: bd.assemblyContext is not None
+                          and model.is_self_or_ancestor(prefix, bd.assemblyContext.fullPathName))
+            hit, dd = refs.ray_nearest(design, shifted, d, accept)
+            if hit is not None and (best[0] is None or dd < best[0]):
+                best = (dd, "copy", path)
+        return best[1], best[2]
+
+    def _shown(self):
+        """Body test for real parts a click can land on (not hidden, not drawn as a copy)."""
+        scene = self.ctrl.scene
+        hidden = {p for p, o in scene._hidden_occs.items() if o.isValid and not o.isLightBulbOn}
+        picked = list(self.picked)
+
+        def shown(body):
+            if not body.isVisible:
+                return False
+            occ = body.assemblyContext
+            if occ is None:
+                return True
+            path = occ.fullPathName
+            if refs.is_split(occ):
+                path = refs.BodyPart(occ, body).fullPathName
+            return not any(model.is_self_or_ancestor(p, path) for p in picked) and                 not any(model.is_self_or_ancestor(h, path) for h in hidden)
+        return shown
+
     def click_at(self, pos):
         """A click in the canvas: a drawn copy or a real part toggles in the move (the whole
         assembly / sub-assembly / single part, per "Click picks")."""
@@ -413,16 +541,16 @@ class ExplodeCommand:
             # (once one is picked, clicks pick parts again even if the Along box keeps the focus)
         except Exception:
             pass
-        leaf = self.copy_at(pos)
-        if leaf is not None:
-            path, part = self.path_for_graphics(leaf), None
+        try:
+            kind, under = self.pick_under(pos)
+        except Exception:
+            log.error("explode: find the part under the cursor")
+            kind, under = None, None
+        if kind == "copy":
+            path, part = self.path_for_graphics(under), None
             what = "copy of " + path
         else:
-            try:
-                body = self.part_at(pos)
-            except Exception:
-                log.error("explode: find the part under the cursor")
-                body = None
+            body = under if kind == "part" else None
             occ = body.assemblyContext if body is not None else None
             if occ is None:
                 log.info("explode: click at ({:.0f}, {:.0f}): nothing to pick".format(pos.x, pos.y))
@@ -441,6 +569,47 @@ class ExplodeCommand:
             self.pick_path(path, part)
             log.info("explode: clicked {} -> {} added to the move".format(what, path))
         self.redraw()
+
+    def box_pick(self, sel, remove=False):
+        """A drag box: add every part it takes to the move (Ctrl: take them out), at the pick level.
+        Moved parts count where their copies are drawn."""
+        design, viewport = self.ctrl.design(), self.ctrl.app.activeViewport
+        _, step = self._step()
+        known = set(self.picked) | (set(model.item_paths(step)) if step is not None else set())
+        level = getattr(self.ctrl, "pick_level", refs.PICK_WHOLE)
+        taken = {}                                          # unit path -> part (None: look it up)
+        copies = set()
+        for path, occ, off in self.ctrl.scene.copy_places:  # moved parts: where they're drawn
+            copies.add(path)
+            try:
+                if boxselect.takes(sel, boxselect.screen_box(viewport, occ.boundingBox, off)):
+                    taken[self.path_for_graphics(path)] = None
+            except Exception:
+                continue
+        for path, part, bbox in boxselect.leaf_parts(design, skip=lambda p: p in copies):
+            try:
+                if not boxselect.takes(sel, boxselect.screen_box(viewport, bbox)):
+                    continue
+            except Exception:
+                continue
+            if isinstance(part, refs.BodyPart):
+                taken[path] = part
+            else:
+                unit = refs.pick_unit(part, level, known)
+                taken[unit.fullPathName] = unit
+        changed = 0
+        for path, part in taken.items():
+            if remove:
+                if path in self.picked:
+                    del self.picked[path]
+                    changed += 1
+            elif path not in self.picked:
+                self.pick_path(path, part)
+                changed += 1
+        log.info("explode: box ({}) {} {} part(s)".format(
+            "crossing" if sel[4] else "window", "took out" if remove else "added", changed))
+        if changed:
+            self.redraw()
 
     def click_copy(self, pos):
         """A click in the canvas: on a drawn copy, pick / unpick its part. True if it was one."""
@@ -567,7 +736,6 @@ class ExplodeCommand:
         self.trail_touched = False
         self._input(adsk.core.StringValueCommandInput, "name").value = ""
         self.picked = {}
-        self._input(adsk.core.SelectionCommandInput, "parts").clearSelection()
         self.refresh()
 
     def save(self):
@@ -691,16 +859,9 @@ class _Created(adsk.core.CommandCreatedEventHandler):
                 level.listItems.add(name, name == getattr(ctrl, "pick_level", refs.PICK_WHOLE))
             level.tooltip = refs.PICK_TIP
 
-            parts = inputs.addSelectionInput("parts", "Parts", "Parts in this move (click moved copies too)")
-            # Whole parts / assemblies only (as Fusion reports a click); a click on a split component
-            # is narrowed to the body under the cursor in _Select (refs.split_body_at).
-            parts.addSelectionFilter("Occurrences")
-            parts.addSelectionFilter(adsk.core.SelectionCommandInput.CustomGraphics)
-            parts.setSelectionLimits(0, 0)
-            # Hidden: the box couldn't show moved parts (selections made in a preview are undone
-            # with it) and pressing on a selected copy started Fusion's own drag, which snapped
-            # the part back. Clicks are found from the mouse (click_at); the count is in the status.
-            parts.isVisible = False
+            # No selection box for the parts: clicks and drag boxes are found from the mouse
+            # (click_at, box_pick). Even hidden, a selection box kept Fusion's own selecting
+            # going (its prompt on the cursor, pre-highlights, clicks taken as selections).
             # Direction: one icon button per choice (the one in use is highlighted).
             axis = inputs.addButtonRowCommandInput("axis", "Direction", False)
             kind = direction.get("kind", model.DIR_AXIS)
@@ -733,10 +894,13 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             default = model.step_distance(manual, step)
             own = owner.working.get("distance")
             sign = -1.0 if model.is_negative(direction) else 1.0      # minus = the other way
+            expr = owner.working.get("distanceExpr")
             dist = inputs.addDistanceValueCommandInput(
-                "distance", "Distance", adsk.core.ValueInput.createByReal(sign * (own if own is not None else default)))
+                "distance", "Distance", adsk.core.ValueInput.createByString(expr) if expr
+                else adsk.core.ValueInput.createByReal(sign * (own if own is not None else default)))
             dist.tooltip = ("Drag the arrow or type. Negative goes the other way along the axis. "
-                            "Changing it gives this move its own distance.")
+                            "Changing it gives this move its own distance. A Fusion parameter works too "
+                            "(e.g. bb_gap or bb_gap * 2): change the parameter and the move follows.")
             flip_btn = inputs.addBoolValueInput("flipDistance", "Flip direction", False,
                                                 os.path.join(paths.ADDIN_DIR, "resources", "flip"), False)
             flip_btn.tooltip = "The other way along the axis (makes the distance negative, or positive again)"
@@ -747,6 +911,14 @@ class _Created(adsk.core.CommandCreatedEventHandler):
                 spacing.listItems.add(label, key == owner.working.get("spacing", model.UNIFORM),
                                       os.path.join(paths.ADDIN_DIR, "resources", icon))
             spacing.tooltip = "How the parts' distances relate (hover a button for what it does)."
+            # Stacked spacings: a distance every part moves first, before spreading out.
+            base_expr = owner.working.get("baseExpr")
+            base = inputs.addDistanceValueCommandInput(
+                "base", "Base distance", adsk.core.ValueInput.createByString(base_expr) if base_expr
+                else adsk.core.ValueInput.createByReal(float(owner.working.get("base") or 0.0)))
+            base.tooltip = ("Every part first moves this far together, then the stacking adds the distance "
+                            "per level (e.g. base 50, distance 20: 70, 90, 110).")
+            base.isVisible = owner.working.get("spacing", model.UNIFORM) != model.UNIFORM
             trails = [p.get("trail", True) for p in owner.working["parts"]]
             trail = inputs.addBoolValueInput("trail", "Trail lines", True, "", all(trails) if trails else True)
             trail.tooltip = "Applies to every part in this move. Per-part lines: open the move in the panel, or Edit lines."
@@ -772,7 +944,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             # Clicks on copies come from press + release (_MouseDown / _MouseUp): Fusion's own
             # mouseClick doesn't fire if the mouse moved a hair, which made copies "sometimes" clickable.
             for event, cls in ((cmd.activate, _Activate), (cmd.mouseUp, _MouseUp), (cmd.mouseDown, _MouseDown),
-                               (cmd.mouseMove, _MouseMove), (cmd.keyDown, _KeyDown),
+                               (cmd.mouseMove, _MouseMove), (cmd.mouseDrag, _MouseDrag), (cmd.keyDown, _KeyDown),
                                (cmd.preSelect, _PreSelect), (cmd.select, _Select), (cmd.unselect, _Unselect),
                                (cmd.inputChanged, _InputChanged), (cmd.executePreview, _Preview),
                                (cmd.execute, _Execute), (cmd.destroy, _Destroy),
@@ -839,10 +1011,33 @@ class _MouseDown(adsk.core.MouseEventHandler):
         try:
             args = adsk.core.MouseEventArgs.cast(args)
             self.owner.mouse_down_at = time.perf_counter()
+            self.owner.any_button = True
             p = args.viewportPosition
             self.owner.mouse_down_pos = (p.x, p.y) if args.button == adsk.core.MouseButtons.LeftMouseButton else None
+            if self.owner.mouse_down_pos is not None:
+                self.owner.box.press(p)
         except Exception:
             log.error("explode mouse down")
+
+
+class _MouseDrag(adsk.core.MouseEventHandler):
+    """Dragging with the left button: the pick box follows the mouse (not while the arrow is being
+    dragged, or while picking an "Along" direction)."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    def notify(self, args):
+        owner = self.owner
+        try:
+            if owner.dragged or time.perf_counter() < owner.dragging_until or owner.picking_direction():
+                owner.box.clear()
+                return
+            owner.box.drag(owner.ctrl.design(), owner.ctrl.app.activeViewport,
+                           adsk.core.MouseEventArgs.cast(args).viewportPosition)
+        except Exception:
+            log.error("explode box drag")
 
 
 class _AfterDrag(adsk.core.CustomEventHandler):
@@ -863,6 +1058,9 @@ class _AfterDrag(adsk.core.CustomEventHandler):
                 log.info("explode: after the drag, distance {:.3f} cm; redrawing".format(dist))
             except Exception:
                 pass
+            owner.ctrl.scene.show_all_edges()       # (hidden while the parts were moving)
+            owner.fast_key = None                   # draw it all again, edges included
+            owner.ctrl.app.activeViewport.refresh()
             owner.redraw()
         except Exception:
             log.error("explode after drag")
@@ -881,6 +1079,12 @@ class _MouseUp(adsk.core.MouseEventHandler):
             args = adsk.core.MouseEventArgs.cast(args)
             down, p = owner.mouse_down_pos, args.viewportPosition
             owner.mouse_down_pos = None
+            owner.any_button = False
+            sel = owner.box.release()
+            if sel is not None and not owner.dragged and args.button == adsk.core.MouseButtons.LeftMouseButton:
+                ctrl_key = bool(args.keyboardModifiers & adsk.core.KeyboardModifiers.CtrlKeyboardModifier)
+                owner.box_pick(sel, remove=ctrl_key)
+                return
             if (not owner.dragged and down is not None and args.button == adsk.core.MouseButtons.LeftMouseButton
                     and abs(p.x - down[0]) + abs(p.y - down[1]) <= 6
                     and time.perf_counter() - owner.mouse_down_at < 1.0):
@@ -911,10 +1115,15 @@ class _Activate(adsk.core.CommandEventHandler):
 
     def notify(self, args):
         try:
-            self.owner.arrow_place = None       # place it now that the dialog shows it
-            self.owner.refresh(preview=False)
-            if self.owner.command is not None:
-                self.owner.command.doExecutePreview()
+            owner = self.owner
+            # Fusion activates the dialog again after every pan / zoom / orbit: redrawing the whole
+            # step each time held up the next zoom. Only the first time; later just the arrow.
+            first = not owner.activated
+            owner.activated = True
+            owner.arrow_place = None            # place it now that the dialog shows it
+            owner.refresh(preview=False)
+            if first and owner.command is not None:
+                owner.command.doExecutePreview()
         except Exception:
             log.error("explode activate")
 
@@ -1050,6 +1259,15 @@ def _ctrl_backspace(box):
     log.info("explode: ctrl+backspace in the name -> {!r}".format(box.value))
 
 
+def _expression(value_input):
+    """What's typed in a distance box, or "" if Fusion won't say (reading it while the dialog is
+    still being built, or the box is hidden, raised InternalValidationError)."""
+    try:
+        return value_input.expression or ""
+    except Exception:
+        return ""
+
+
 class _InputChanged(adsk.core.InputChangedEventHandler):
     def __init__(self, owner):
         super().__init__()
@@ -1061,6 +1279,10 @@ class _InputChanged(adsk.core.InputChangedEventHandler):
             args = adsk.core.InputChangedEventArgs.cast(args)
             changed = args.input
             cid = changed.id
+            now = time.perf_counter()
+            if cid != "nudge" and (cid != owner.last_input or now - owner.last_input_at > 2.0):
+                log.info("explode: input changed " + cid)         # (what makes Fusion redraw)
+            owner.last_input, owner.last_input_at = cid, now
             if owner.syncing and cid == "parts":
                 return                      # sync_box refilling the box (re-setting the arrow would stop a drag)
             if cid == "name":
@@ -1097,7 +1319,10 @@ class _InputChanged(adsk.core.InputChangedEventHandler):
                 owner.distance_touched = True   # dragged / typed: this move has its own distance now
             elif cid == "flipDistance":
                 dist = owner._input(adsk.core.DistanceValueCommandInput, "distance")
-                dist.value = -dist.value
+                if params.is_expression(_expression(dist)):
+                    dist.expression = params.flip(_expression(dist))  # (keeps the parameter)
+                else:
+                    dist.value = -dist.value
             elif cid == "trail":
                 owner.trail_touched = True
             owner.refresh(preview=False)

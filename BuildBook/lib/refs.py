@@ -420,10 +420,8 @@ def pick_unit(occ, level, known=()):
     return unit or occ
 
 
-def body_at(viewport, design, pos, accept=None):
-    """The visible body under a viewport position (Point2D, pixels), nearest along the view
-    ray, or None. For picking from mouse events without Fusion's selection. With `accept`
-    (body -> bool), hidden bodies are tested too and only accepted ones count."""
+def view_ray(viewport, pos):
+    """(origin, direction) of the view ray through a viewport position (pixels)."""
     cam = viewport.camera
     p = viewport.viewToModelSpace(adsk.core.Point2D.create(pos.x, pos.y))
     if cam.cameraType == adsk.core.CameraTypes.OrthographicCameraType:
@@ -433,11 +431,16 @@ def body_at(viewport, design, pos, accept=None):
         back.scaleBy(-10000.0)
         origin = p.copy()
         origin.translateBy(back)
-    else:
-        origin, d = cam.eye, cam.eye.vectorTo(p)
+        return origin, d
+    return cam.eye, cam.eye.vectorTo(p)
+
+
+def ray_nearest(design, origin, direction, accept=None):
+    """(body, distance) of the nearest face the ray hits, or (None, None). With `accept`
+    (body -> bool), hidden bodies are tested too and only accepted ones count."""
     hits = adsk.core.ObjectCollection.create()
     found = design.rootComponent.findBRepUsingRay(
-        origin, d, adsk.fusion.BRepEntityTypes.BRepFaceEntityType, -1.0, accept is None, hits)
+        origin, direction, adsk.fusion.BRepEntityTypes.BRepFaceEntityType, -1.0, accept is None, hits)
     best, best_d = None, None
     for i in range(found.count):
         face = adsk.fusion.BRepFace.cast(found.item(i))
@@ -448,7 +451,15 @@ def body_at(viewport, design, pos, accept=None):
         dist = origin.distanceTo(hits.item(i))
         if best is None or dist < best_d:
             best, best_d = face, dist
-    return best.body if best is not None else None
+    return (best.body, best_d) if best is not None else (None, None)
+
+
+def body_at(viewport, design, pos, accept=None):
+    """The visible body under a viewport position (Point2D, pixels), nearest along the view
+    ray, or None. For picking from mouse events without Fusion's selection. With `accept`
+    (body -> bool), hidden bodies are tested too and only accepted ones count."""
+    origin, d = view_ray(viewport, pos)
+    return ray_nearest(design, origin, d, accept)[0]
 
 
 def selected_occurrences(ui):

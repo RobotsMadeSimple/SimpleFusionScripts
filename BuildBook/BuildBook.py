@@ -22,15 +22,17 @@ from .lib import log, paths
 
 # Everything else loads the first time BuildBook is opened (_load_modules): Fusion loads every
 # add-in at start-up, and Autodesk asks for run() to take under 5 ms and only hook up the button.
-anchor_cmd = explode_cmd = lines_cmd = pick_cmd = None
-capture = crop = explode = hardware = hidden_record = userprefs = manual_pdf = model = None
+anchor_cmd = explode_cmd = lines_cmd = pick_cmd = animate = None
+capture = crop = explode = hardware = hidden_record = userprefs = manual_pdf = model = params = None
 partthumbs = pictures = refs = scene_mod = Scene = CropOverlay = None
 
 
 def _load_modules():
-    global anchor_cmd, explode_cmd, lines_cmd, pick_cmd, capture, crop, explode, hardware
-    global hidden_record, userprefs, manual_pdf, model, partthumbs, pictures, refs, scene_mod, Scene, CropOverlay
+    global anchor_cmd, explode_cmd, lines_cmd, pick_cmd, animate, capture, crop, explode, hardware
+    global params, hidden_record, userprefs, manual_pdf, model, partthumbs, pictures, refs, scene_mod, Scene, CropOverlay
     from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
+    from .lib import animate
+    from .lib import params
     from .lib import (capture, crop, explode, hardware, hidden_record, userprefs, manual_pdf, model,
                       partthumbs, pictures, refs)
     from .lib import scene as scene_mod
@@ -71,6 +73,8 @@ class Controller:
         self._notice = None
         self.undo_stack = []        # [(manual JSON before, what was done)]: Ctrl+Z in the panel
         self.held_step = None       # step a dialog (Pick, Explode) is working on while it clears the view
+        self.player = animate.Player(self)  # playing / recording the build
+        self.camera_moved_at = 0.0  # last camera change (panning / orbiting)
 
     # ------------------------------------------------------------ design + storage
 
@@ -93,6 +97,10 @@ class Controller:
             log.error("manual attribute unreadable; starting a new one")
             manual = model.new_manual()
         refs.set_split(manual["settings"].get("splitBodies"))     # which components are parts per body
+        try:
+            params.resolve(design, manual)      # distances that follow Fusion's parameters
+        except Exception:
+            log.error("work out parameter expressions")
         if not (manual.get("title") or "").strip() or manual["title"] == "Build manual":
             manual["title"] = self.document_title() or manual.get("title") or "Build manual"
         return manual
@@ -138,7 +146,10 @@ class Controller:
             self.scene.set_highlight(self.checked)
             if move_camera:
                 _, step = model.find_step(manual, step_id)
-                if step is not None and capture.apply_camera(self.app.activeViewport, step.get("camera"), smooth):
+                camera = step.get("camera") if step is not None else None
+                if step_id == model.OVERVIEW_STEP:      # (its view is the exploded-view picture's)
+                    camera = manual.get("overview", {}).get("camera") or manual.get("cover", {}).get("camera")
+                if step is not None and capture.apply_camera(self.app.activeViewport, camera, smooth):
                     # The frame is projected from the screen: let Fusion finish moving the camera
                     # first (an instant move fires no camera events to redraw it afterwards).
                     self.app.activeViewport.refresh()
@@ -248,6 +259,10 @@ class Controller:
                     * (-1 if model.is_negative(ex["direction"]) else 1),
                     "own": kind == model.DIR_XYZ or ex.get("distance") is not None,
                     "spacing": ex.get("spacing", model.UNIFORM),
+                    "base": shown(ex.get("base") or 0.0),
+                    "distanceExpr": ex.get("distanceExpr") or "",
+                    "baseExpr": ex.get("baseExpr") or "",
+                    "exprError": bool(ex.get("exprError")),
                     "trail": "all" if trails and all(trails) else "some" if any(trails) else "none",
                     "parts": parts,
                 })
@@ -295,8 +310,10 @@ class Controller:
             "missing": missing,
             "units": length_units,
             "manualDefault": shown(manual["settings"]["defaultDistance"]),
+            "manualDefaultExpr": manual["settings"].get("defaultDistanceExpr") or "",
             "myDefaults": userprefs.exists(),
             "branding": userprefs.effective_branding(manual["settings"]),
+            "playing": self.player.playing,
             "brandingLocked": sorted(userprefs.locked_fields(manual["settings"])),
             "brandingDefaults": {k: bool(v) for k, v in userprefs.branding().items()},
             "exportFolder": capture.export_folder(manual),
@@ -335,6 +352,12 @@ class Controller:
         palette = self.ui.palettes.itemById(PALETTE_ID)
         if palette is not None and palette.isVisible:
             palette.sendInfoToHTML("selection", json.dumps({"paths": list(paths), "ours": True}))
+
+    def send_panel(self, action, data):
+        """A small message to the panel (not a whole state push)."""
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        if palette is not None and palette.isVisible:
+            palette.sendInfoToHTML(action, json.dumps(data))
 
     def push_state(self):
         if getattr(self, "_quiet", False):
@@ -426,6 +449,21 @@ class Controller:
             self.push_state()
 
     def handle(self, action, data):
+        if action == "stopPlay":
+            self.player.stop()
+            return
+        if action in ("play", "record"):
+            scope, sid, reverse = data.get("scope", "book"), data.get("id"), bool(data.get("reverse"))
+            if action == "play":
+                if not self.player.play(scope, sid, reverse):
+                    self.notify("Nothing to play: add steps first.")
+                self.push_state()
+            else:
+                self.player.record(scope, sid, reverse)
+            return
+        if self.player.playing and action not in ("ready", "jsError", "selectItems", "checkItems",
+                                                  "partMeshes", "hoverExplode"):
+            self.player.stop()              # anything else takes over the view
         if action == "undo":
             self.undo()
             return
@@ -536,10 +574,11 @@ class Controller:
                     sec["image"]["camera"] = None
                     n += 1
                 capture.delete_thumbnail(self.app, "section-" + sec["id"])
-            if manual.get("cover", {}).get("camera"):
-                manual["cover"]["camera"] = None
-                n += 1
-            capture.delete_thumbnail(self.app, "cover")
+            for kind in ("cover", "overview"):
+                if manual.get(kind, {}).get("camera"):
+                    manual[kind]["camera"] = None
+                    n += 1
+                capture.delete_thumbnail(self.app, kind)
         elif action == "setBranding":
             # Company / author / logo set for this book (a field showing the saved default is locked).
             key, value = data.get("key"), data.get("value") or ""
@@ -662,6 +701,24 @@ class Controller:
             self.close_view()
             return
 
+        elif action == "setOverviewInclude":
+            model.overview_step(manual)
+            manual["overview"]["includeSteps"] = bool(data.get("on"))
+            rerender = self.scene.active
+        elif action == "setStepTrail" and step:
+            # The step's own trail line look ({} / None: back to the manual's).
+            look = data.get("trail")
+            if look:
+                own = dict(step.get("trail") or {})
+                own.update({k: v for k, v in look.items() if k in ("color", "weight", "style")})
+                step["trail"] = own
+            else:
+                step["trail"] = None
+            rerender = True
+        elif action == "setTogether" and step:
+            value = data.get("together")
+            step["together"] = None if value is None else bool(value)
+            dirty = True
         elif action == "setPrep" and step:
             step["prep"] = bool(data.get("prep"))
             rerender = True
@@ -741,11 +798,14 @@ class Controller:
             step["distance"] = value
             rerender = True
         elif action == "setDefaultDistance":
-            value = self._parse_length(data.get("value", ""))
+            text = str(data.get("value", "")).strip()
+            value = self._parse_length(text)
             if value is False or value is None:
                 self.push_state()
                 return
-            manual["settings"]["defaultDistance"] = value
+            manual["settings"]["defaultDistance"] = abs(value)
+            # A parameter (e.g. "bb_gap"): kept, and worked out again on every load.
+            manual["settings"]["defaultDistanceExpr"] = text if params.is_expression(text) else None
             rerender = self.scene.active
         elif action == "setTrail" and step:
             # Trail lines on/off for these parts in every explode move of the step.
@@ -787,14 +847,15 @@ class Controller:
                 self.explode.launch(step["id"], data["id"])
             return
         elif action == "hoverExplode":
-            # The cursor on a move's row: the step as it stands just after that move (id None:
-            # every move again). Only the canvas changes; the panel keeps its own hover look.
-            if step is not None and self.scene.active and not self.scene.edit and step["id"] == self.scene.step_id:
-                upto = data.get("id") if model.find_explode(step, data.get("id")) else None
-                if upto != self.scene.upto:
-                    self.scene.show(self.design(), manual, step["id"], upto=upto)
-                    self.scene.set_highlight(self.checked)
-                    self.app.activeViewport.refresh()
+            # The cursor on a move's row: that move's parts and trail lines light up (id None: back
+            # to normal). Only colours change, nothing is redrawn.
+            if (step is not None and self.scene.active and not self.scene.edit and step["id"] == self.scene.step_id
+                    and not self.player.playing):
+                ex = model.find_explode(step, data.get("id"))
+                paths = [p["ref"].get("path") for p in ex["parts"]] if ex else []
+                self.scene.set_highlight(list(self.checked) + paths)
+                self.scene.highlight_trails(ex["id"] if ex else None)
+                self.app.activeViewport.refresh()
             return
         elif action == "scrubExplode" and step:
             upto = data.get("id")
@@ -1070,6 +1131,7 @@ class Controller:
         progress = self.ui.createProgressDialog()
         progress.isCancelButtonShown = True
         extra = [("cover", None)] if manual.get("cover", {}).get("enabled", True) else []
+        extra += [("overview", None)] if manual.get("overview", {}).get("enabled") else []
         extra += [("section", sec["id"]) for sec in manual["sections"]
                   if sec.get("image", {}).get("enabled") and sec["steps"]]
         progress.show("BuildBook", "Rendering picture %v of %m for the PDF...", 0, max(1, len(ordered) + len(extra)), 0)
@@ -1153,6 +1215,8 @@ class Controller:
             "bom": raw_bom([st for _, st in ordered]),
             "cover_image": pics.get(("cover", None)),
             "cover_annotations": manual.get("cover", {}).get("annotations", []),
+            "overview_image": pics.get(("overview", None)),
+            "overview_annotations": manual.get("overview", {}).get("annotations", []),
         }
         try:
             with log.timed("build PDF"):
@@ -1364,6 +1428,7 @@ class Controller:
             self.show_step(step_id)
 
     def on_document_switch(self):
+        self.player.stop()
         self.undo_stack = []                # (undo is per design)
         refs.forget_document()          # (hardware labels are per component: kept)
         self.crop_overlay.clear()
@@ -1453,6 +1518,8 @@ class CameraChangedHandler(adsk.core.CameraEventHandler):
 
     def notify(self, args):
         # Fires continuously while orbiting: do nothing unless the frame is showing.
+        if _ctrl is not None:
+            _ctrl.camera_moved_at = time.perf_counter()     # (the explode dialog's hover waits for it)
         if _ctrl is None or _ctrl.frame_ratio is None or not (_ctrl.scene.active or _ctrl.picture_view):
             return                  # (a section / cover picture on screen counts: its frame follows too)
         try:
@@ -1533,6 +1600,15 @@ def reload_addin():
             traceback.format_exc()))
 
 
+class AnimTickHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        try:
+            if _ctrl is not None:
+                _ctrl.player.tick()
+        except Exception:
+            log.error("animation tick")
+
+
 class ReloadHandler(adsk.core.CustomEventHandler):
     def notify(self, args):
         reload_addin()
@@ -1568,6 +1644,13 @@ class SelectionChangedHandler(adsk.core.ActiveSelectionEventHandler):
             log.error("selection changed")
 
 
+def _uses_parameters(manual):
+    if manual["settings"].get("defaultDistanceExpr"):
+        return True
+    steps = [st for _, st in model.ordered_steps(manual)] + [model.overview_step(manual)]
+    return any(ex.get("distanceExpr") or ex.get("baseExpr") for st in steps for ex in st.get("explodes", []))
+
+
 class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
     """After a Fusion command that can change the model (rebuild, getting the latest version of a
     referenced part, renaming...), refresh the panel: part names, missing parts."""
@@ -1580,6 +1663,10 @@ class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
                 return
             log.info("after Fusion command {}: refreshing the panel".format(cmd))
             refs.forget_missing()           # parts found again after an update show again
+            if _ctrl.scene.active and not _ctrl.scene.edit and _uses_parameters(_ctrl.load()):
+                # (a parameter may have changed: moves that follow one are drawn again)
+                _ctrl.show_step(_ctrl.scene.step_id, upto=_ctrl.scene.upto)
+                return
             _ctrl.push_state()
         except Exception:
             log.error("command terminated")
@@ -1738,6 +1825,11 @@ def _start():
     except Exception:
         pass
     _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
+    try:
+        app.unregisterCustomEvent(animate.TICK_EVENT)
+    except Exception:
+        pass
+    _add(app.registerCustomEvent(animate.TICK_EVENT), AnimTickHandler())
     _add(app.documentOpened, DocSwitchHandler())
     _add(app.documentDeactivating, DocDeactivatingHandler())
     log.info("BuildBook started in {:.0f} ms".format((time.perf_counter() - t0) * 1000))
@@ -1756,6 +1848,11 @@ def stop(context):
         except Exception:
             pass
         if _ctrl is not None:
+            _ctrl.player.playing = False
+            try:
+                app.unregisterCustomEvent(animate.TICK_EVENT)
+            except Exception:
+                pass
             _ctrl.editor.close()
             _ctrl.scene.clear()
             _ctrl.explode.unregister(ui)
