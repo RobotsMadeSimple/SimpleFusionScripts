@@ -57,6 +57,7 @@
     playBack: '<svg viewBox="0 0 16 16"><path d="M11 3.5v9L4 8z" fill="currentColor"/></svg>',
     record: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4" fill="#d9463e" stroke="none"/></svg>',
     recordBack: '<svg viewBox="0 0 16 16"><circle cx="10" cy="8" r="3.5" fill="#d9463e" stroke="none"/><path d="M5.5 5v6L2 8z" fill="currentColor"/></svg>',
+    recordEach: '<svg viewBox="0 0 16 16"><circle cx="4" cy="8" r="2.4" fill="#d9463e" stroke="none"/><circle cx="9.5" cy="8" r="2.4" fill="#d9463e" stroke="none" opacity=".75"/><circle cx="14" cy="8" r="1.6" fill="#d9463e" stroke="none" opacity=".5"/></svg>',
     stop: '<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" fill="currentColor"/></svg>',
     plus: '<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>',
     details: '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3M5.5 8.5h5M5.5 11h3.5"/></svg>',
@@ -1110,6 +1111,12 @@
     $('setEdges').checked = !!s.drawEdges;
     $('setShortHw').checked = s.shortHardwareNames !== false;
     var an = s.animation || {};
+    var scopeWas = $('recScope').value;
+    $('recScope').innerHTML = '<option value="">Whole book</option>' + state.manual.sections.map(function (sec, i) {
+      return '<option value="' + esc(sec.id) + '">Section ' + (i + 1) + ': ' + esc(sec.title) + '</option>';
+    }).join('') + '<option value="' + OVERVIEW + '">Exploded view of the whole assembly</option>';
+    $('recScope').value = scopeWas;
+    if ($('recScope').selectedIndex < 0) $('recScope').value = '';
     $('setAnimTogether').checked = an.allAtOnce !== false;
     [['setAnimMove', 'moveSeconds'], ['setAnimCam', 'cameraSeconds'], ['setAnimPause', 'pauseSeconds'],
      ['setAnimWidth', 'videoWidth'], ['setAnimFps', 'fps']].forEach(function (f) {
@@ -1185,10 +1192,18 @@
   $('playBar').addEventListener('click', function (e) {
     var b = e.target.closest('[data-play]');
     if (!b) return;
-    var kind = b.getAttribute('data-play');
-    send(kind.indexOf('record') === 0 ? 'record' : 'play', { scope: 'book', reverse: kind === 'reverse' || kind === 'recordReverse' });
+    send('play', { scope: 'book', reverse: b.getAttribute('data-play') === 'reverse' });
   });
   $('btnStopPlay').addEventListener('click', function () { send('stopPlay'); });
+  // Export tab: record the book or a section, as one video or one per step.
+  function recordTarget() {
+    var v = $('recScope').value;
+    var reverse = !!$('recDirection').value;
+    if (v === OVERVIEW) return { scope: 'overview', reverse: reverse };
+    return v ? { scope: 'section', id: v, reverse: reverse } : { scope: 'book', reverse: reverse };
+  }
+  $('btnRecord').addEventListener('click', function () { send('record', recordTarget()); });
+  $('btnRecordEach').addEventListener('click', function () { send('recordEach', recordTarget()); });
   [['setAnimMove', 'moveSeconds'], ['setAnimCam', 'cameraSeconds'], ['setAnimPause', 'pauseSeconds'],
    ['setAnimWidth', 'videoWidth'], ['setAnimFps', 'fps']].forEach(function (f) {
     $(f[0]).addEventListener('change', function (e) {
@@ -1658,7 +1673,7 @@
     edit: ICON.open, rename: ICON.edit, prep: ICON.parts, addBefore: ICON.plus, addAfter: ICON.plus,
     up: ICON.up, down: ICON.down, delete: ICON.trash,
     play: ICON.play, playBack: ICON.playBack, record: ICON.record,
-    secPlay: ICON.play, secPlayBack: ICON.playBack, secRecord: ICON.record, secRecordBack: ICON.recordBack
+    secPlay: ICON.play, secPlayBack: ICON.playBack
   };
   function closeItemMenu() { $('itemMenu').classList.add('hidden'); }
   $('items').addEventListener('contextmenu', function (e) {
@@ -1704,7 +1719,7 @@
     if ($('itemMenu').getAttribute('data-mode') === 'step') { stepMenuAction(act, $('itemMenu').getAttribute('data-step')); return; }
     if ($('itemMenu').getAttribute('data-mode') === 'section') {
       var sid = $('itemMenu').getAttribute('data-step');
-      send(act.indexOf('Record') >= 0 ? 'record' : 'play', { scope: 'section', id: sid, reverse: /Back$/.test(act) });
+      send('play', { scope: 'section', id: sid, reverse: act === 'secPlayBack' });
       return;
     }
     if (act === 'trailOn') send('setTrail', { paths: paths, trail: true });
@@ -1724,8 +1739,7 @@
       var sec = state.manual.sections.filter(function (s) { return s.id === secId; })[0];
       var m0 = $('itemMenu');
       m0.innerHTML = '<div class="ctx-title">' + esc(sec.title) + '</div>' + [
-        ['secPlay', 'Play this section'], ['secPlayBack', 'Play it backwards'],
-        ['secRecord', 'Record this section'], ['secRecordBack', 'Record it backwards']
+        ['secPlay', 'Play this section'], ['secPlayBack', 'Play it backwards']
       ].map(function (it) {
         return '<button class="ctx-item" data-ctx="' + it[0] + '">' + (CTX_ICONS[it[0]] || '') + '<span>' + esc(it[1]) + '</span></button>';
       }).join('');
@@ -1753,7 +1767,6 @@
       null,
       ['play', 'Play this step'],
       ['playBack', 'Play it backwards'],
-      ['record', 'Record this step'],
       null,
       first ? false : ['up', 'Move up'],
       last ? false : ['down', 'Move down'],
@@ -1793,7 +1806,6 @@
     }
     else if (act === 'play') send('play', { scope: 'step', id: id });
     else if (act === 'playBack') send('play', { scope: 'step', id: id, reverse: true });
-    else if (act === 'record') send('record', { scope: 'step', id: id });
     else if (act === 'up') send('moveStep', { id: id, delta: -1 });
     else if (act === 'down') send('moveStep', { id: id, delta: 1 });
     else if (act === 'delete') send('deleteStep', { id: id });     // (Ctrl+Z brings it back)
@@ -1821,6 +1833,10 @@
   $('overviewActions').addEventListener('click', function (e) {
     var b = e.target.closest('[data-pic]');
     if (b) send(b.getAttribute('data-pic'), { kind: 'overview' });
+  });
+  $('btnOverviewPlay').addEventListener('click', function (e) {
+    e.stopPropagation();
+    send('play', { scope: 'overview', reverse: true });     // (out into the exploded view)
   });
   $('btnOverviewEdit').addEventListener('click', function (e) {
     e.stopPropagation();

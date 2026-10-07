@@ -44,8 +44,6 @@
       <span class="spacer"></span>
       <button class="icon-btn" data-play="play" data-icon="play" title="Play the assembly: each step's parts move into place, step by step"></button>
       <button class="icon-btn" data-play="reverse" data-icon="playBack" title="Play it backwards: disassembly, last step first"></button>
-      <button class="icon-btn" data-play="record" data-icon="record" title="Record the assembly to a video (MP4 with FFmpeg) in the export folder"></button>
-      <button class="icon-btn" data-play="recordReverse" data-icon="recordBack" title="Record the disassembly to a video"></button>
       <button class="btn small danger hidden" id="btnStopPlay" data-icon="stop" title="Stop the animation">Stop</button>
     </div>
     <div id="tree"></div>
@@ -272,6 +270,7 @@
           <button class="btn" data-pic="pictureView" data-icon="camera" title="Save the current camera as the exploded view's view">Save view</button>
           <button class="btn" data-pic="pictureGo" data-icon="target" title="Show the whole assembly exploded, at its view">Go to view</button>
           <button class="btn" data-pic="annotate" data-icon="pen" title="Draw on the exploded view">Annotate</button>
+          <button class="btn" id="btnOverviewPlay" data-icon="play" title="Play it on screen: the parts move from assembled out into the exploded view">Play</button>
           <button class="btn" id="btnOverviewEdit" data-icon="explode" title="Add explode moves of its own and pick their parts (in the Step tab)">Edit moves</button>
           <button class="btn danger" id="btnOverviewDeleteView" data-icon="trash" title="Forget the exploded view's saved view (and its preview)">Delete view</button>
           <span class="sub" id="overviewInfo"></span>
@@ -303,6 +302,32 @@
       </div>
       <div class="actions-row">
         <button id="btnExportPdf" class="btn primary" data-icon="pdf" title="Render every picture and write the manual as a PDF">Export PDF</button>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3 data-icon="play" data-info="Videos of the build: parts move into place step by step, the camera gliding between the steps' saved views. They're saved in the export folder; videos need FFmpeg (without it the frames are saved as pictures). The same timing plays on screen (the play buttons on the Steps tab).">Animation video</h3></div>
+      <div class="grid three">
+        <div><label for="setAnimMove">Each move (s)</label><input id="setAnimMove" type="number" min="0.1" max="10" step="0.1" title="How long a part takes for one explode move"></div>
+        <div><label for="setAnimCam">Camera (s)</label><input id="setAnimCam" type="number" min="0" max="10" step="0.1" title="How long the camera takes to glide to the next step's view"></div>
+        <div><label for="setAnimPause">Pause (s)</label><input id="setAnimPause" type="number" min="0" max="10" step="0.1" title="Pause before and after each step's moves"></div>
+      </div>
+      <div class="grid two">
+        <div><label for="setAnimWidth">Video width (px)</label><input id="setAnimWidth" type="number" min="320" max="3840" step="160" title="The video's width; its shape follows the crop ratio"></div>
+        <div><label for="setAnimFps">Frames per second</label><input id="setAnimFps" type="number" min="5" max="60" step="1" title="More is smoother but takes longer to record"></div>
+      </div>
+      <label class="check" title="Steps set to Default play all their moves at the same time instead of one after another (each step can choose in its Explode moves card)">
+        <input type="checkbox" id="setAnimTogether"> Play a step's moves all at once</label>
+      <div class="grid two">
+        <div><label for="recScope">What</label><select id="recScope" title="The whole book or one section"></select></div>
+        <div><label for="recDirection">Direction</label>
+          <select id="recDirection">
+            <option value="">Assembly (parts move in)</option>
+            <option value="1">Disassembly (parts move out)</option>
+          </select></div>
+      </div>
+      <div class="actions-row">
+        <button id="btnRecord" class="btn primary" data-icon="record" title="One video of all of it">Record video</button>
+        <button id="btnRecordEach" class="btn" data-icon="recordEach" title="A video of its own for every step (the export folder's Animations folder, named like the step pictures)">Record each step</button>
       </div>
     </section>
   </main>
@@ -337,20 +362,6 @@
           </select>
         </div>
       </div>
-    </section>
-    <section class="card">
-      <div class="card-head"><h3 data-icon="play" data-info="Playing and recording the build (the play buttons on the Steps tab, and a section's or step's right-click menu). Videos need FFmpeg; without it the frames are saved as pictures.">Animation</h3></div>
-      <div class="grid three">
-        <div><label for="setAnimMove">Each move (s)</label><input id="setAnimMove" type="number" min="0.1" max="10" step="0.1" title="How long a part takes for one explode move"></div>
-        <div><label for="setAnimCam">Camera (s)</label><input id="setAnimCam" type="number" min="0" max="10" step="0.1" title="How long the camera takes to glide to the next step's view"></div>
-        <div><label for="setAnimPause">Pause (s)</label><input id="setAnimPause" type="number" min="0" max="10" step="0.1" title="Pause before and after each step's moves"></div>
-      </div>
-      <div class="grid two">
-        <div><label for="setAnimWidth">Video width (px)</label><input id="setAnimWidth" type="number" min="320" max="3840" step="160" title="The video's width; its shape follows the crop ratio"></div>
-        <div><label for="setAnimFps">Frames per second</label><input id="setAnimFps" type="number" min="5" max="60" step="1" title="More is smoother but takes longer to record"></div>
-      </div>
-      <label class="check" title="Steps set to Default play all their moves at the same time instead of one after another (each step can choose in its Explode moves card)">
-        <input type="checkbox" id="setAnimTogether"> Play a step's moves all at once</label>
     </section>
     <section class="card">
       <div class="card-head"><h3 data-icon="star" data-info="Your own starting settings, kept on this computer for every design: step views, explode distance, trail lines, annotation style, and the Export tab's image and folder options.">My defaults</h3></div>

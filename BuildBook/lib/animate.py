@@ -32,6 +32,14 @@ def steps_for(manual, scope, sid=None):
     """[(step id, moves, camera)] for "book", a section (id) or one step (id), in book order."""
     out = []
     default = settings_of(manual).get("allAtOnce", True) is not False
+    if scope == "overview":
+        # The exploded view of the whole assembly: one "step" with every move in it.
+        _, own = model.find_step(manual, model.OVERVIEW_STEP)
+        step = model.effective_step(manual, own)
+        camera = manual.get("overview", {}).get("camera") or manual.get("cover", {}).get("camera")
+        together = own.get("together")
+        return [(model.OVERVIEW_STEP, len(step.get("explodes", [])), camera,
+                 default if together is None else bool(together))] if step.get("explodes") else []
     for sec in manual["sections"]:
         if scope == "section" and sec["id"] != sid:
             continue
@@ -51,6 +59,8 @@ def scope_title(manual, scope, sid=None):
     if scope == "step":
         _, step = model.find_step(manual, sid)
         return step["title"] if step else "Step"
+    if scope == "overview":
+        return "{} - exploded view".format(manual.get("title") or "Build manual")
     return manual.get("title") or "Build manual"
 
 
@@ -175,65 +185,111 @@ class Player:
     # ------------------------------------------------------------ recording
 
     def record(self, scope, sid=None, reverse=False):
-        """Draw every frame, save it, and make an MP4 (FFmpeg) in the export folder."""
+        """Record the book / a section / a step to one MP4 (FFmpeg) in the export folder."""
         self.stop()
-        if not self._prepare(scope, sid, reverse):
+        manual = self.ctrl.load()
+        if not steps_for(manual, scope, sid):
             return
-        ctrl, manual = self.ctrl, self.manual
+        title = capture.safe_filename("{} - {}".format(
+            scope_title(manual, scope, sid), "disassembly" if reverse else "assembly"))
+        out_dir = capture.export_folder(manual)
+        message = self._record_jobs(manual, [(scope, sid, title)], reverse, out_dir)
+        self.ctrl.notify(message)
+        self.ctrl.push_state()
+
+    def record_each(self, scope, sid=None, reverse=False):
+        """Every step of the book / a section to a video of its own, in the export folder's
+        "Animations" folder, named like the step pictures ("Section 1 - Step 2 - Name - assembly")."""
+        self.stop()
+        manual = self.ctrl.load()
+        jobs = []
+        if scope == "overview":                     # (one "step": the same as one video)
+            self.record(scope, sid, reverse)
+            return
+        for step_id, _, _, _ in steps_for(manual, scope, sid):
+            _, step = model.find_step(manual, step_id)
+            base = capture.image_name(manual, step)[:-4]                 # (without ".png")
+            jobs.append(("step", step_id, capture.safe_filename(
+                "{} - {}".format(base, "disassembly" if reverse else "assembly"))))
+        if not jobs:
+            return
+        out_dir = os.path.join(capture.export_folder(manual), "Animations")
+        message = self._record_jobs(manual, jobs, reverse, out_dir)
+        self.ctrl.notify(message)
+        self.ctrl.push_state()
+
+    def _record_jobs(self, manual, jobs, reverse, out_dir):
+        """Record each (scope, id, file title) in turn under one progress bar; returns the message."""
+        ctrl = self.ctrl
         anim = settings_of(manual)
         fps = max(5, min(60, int(anim.get("fps") or 30)))
-        frames = int(timeline.total(self.segments) * fps) + 1
         video = json.loads(json.dumps(manual))
         video["settings"].setdefault("image", {}).update({"width": int(anim.get("videoWidth") or 1280),
                                                           "transparent": False})
-        folder = tempfile.mkdtemp(prefix="buildbook-video-")
+        # Work out every timeline first, for one progress bar over all the frames.
+        plans = []
+        for scope, sid, title in jobs:
+            steps = steps_for(manual, scope, sid)
+            segments = timeline.build(steps, reverse, anim)
+            plans.append((title, steps, segments, int(timeline.total(segments) * fps) + 1))
+        total_frames = sum(p[3] for p in plans)
         progress = ctrl.ui.createProgressDialog()
         progress.isCancelButtonShown = True
-        progress.show("BuildBook", "Recording frame %v of %m...", 0, frames, 0)
-        box, cancelled, t0 = None, False, time.perf_counter()
-        self.recording = True
+        progress.show("BuildBook", "Recording frame %v of %m...", 0, total_frames, 0)
+        os.makedirs(out_dir, exist_ok=True)
+        ffmpeg = find_ffmpeg(manual)
         camera = capture.camera_to_dict(ctrl.app.activeViewport.camera)
+        done, kept_frames, failed, cancelled, t0 = [], [], [], False, time.perf_counter()
+        frame_no = 0
+        self.recording = True
         try:
-            for i in range(frames):
-                if progress.wasCancelled:
-                    cancelled = True
+            for title, steps, segments, frames in plans:
+                self.manual, self.segments = manual, segments
+                self.together = {s[0]: s[3] for s in steps}
+                self.shown, self.camera = None, None
+                ctrl.crop_overlay.clear()
+                ctrl.frame_ratio = None
+                folder = tempfile.mkdtemp(prefix="buildbook-video-")
+                box = None
+                for i in range(frames):
+                    if progress.wasCancelled:
+                        cancelled = True
+                        break
+                    self._frame(i / float(fps))
+                    box = capture.render_raw(ctrl.app, video, os.path.join(folder, "f_{:05d}.png".format(i)))
+                    frame_no += 1
+                    progress.progressValue = frame_no
+                if cancelled:
+                    shutil.rmtree(folder, ignore_errors=True)
                     break
-                self._frame(i / float(fps))
-                box = capture.render_raw(ctrl.app, video, os.path.join(folder, "f_{:05d}.png".format(i)))
-                progress.progressValue = i + 1
+                if ffmpeg:
+                    out = os.path.join(out_dir, title + ".mp4")
+                    try:
+                        _encode(ffmpeg, folder, fps, box, out)
+                        shutil.rmtree(folder, ignore_errors=True)
+                        done.append(out)
+                        log.info("animation: video " + out)
+                        continue
+                    except Exception as err:
+                        log.error("make the video")
+                        failed.append(str(err))
+                kept_frames.append(_keep_frames(folder, out_dir, title))
         finally:
             self.recording = False
             progress.hide()
             capture.apply_camera(ctrl.app.activeViewport, camera, smooth=False, quiet=True)
-        log.info("animation: recorded {} frame(s) in {:.1f} s".format(frames, time.perf_counter() - t0))
+        log.info("animation: recorded {} frame(s) in {:.1f} s".format(frame_no, time.perf_counter() - t0))
         if cancelled:
-            shutil.rmtree(folder, ignore_errors=True)
-            ctrl.notify("Recording cancelled.")
-            ctrl.push_state()
-            return
-
-        title = capture.safe_filename("{} - {}".format(
-            scope_title(manual, scope, sid), "disassembly" if reverse else "assembly"))
-        out_dir = capture.export_folder(manual)
-        os.makedirs(out_dir, exist_ok=True)
-        ffmpeg = find_ffmpeg(manual)
-        if ffmpeg:
-            out = os.path.join(out_dir, title + ".mp4")
-            try:
-                _encode(ffmpeg, folder, fps, box, out)
-                shutil.rmtree(folder, ignore_errors=True)
-                ctrl.notify("Video saved: " + out)
-                log.info("animation: video " + out)
-            except Exception as err:
-                log.error("make the video")
-                kept = _keep_frames(folder, out_dir, title)
-                ctrl.notify("FFmpeg couldn't make the video ({}). The frames are in {}".format(err, kept))
-        else:
-            kept = _keep_frames(folder, out_dir, title)
-            ctrl.notify("No FFmpeg found, so the frames were saved as pictures in {}. Install FFmpeg "
-                        "(e.g. “winget install ffmpeg”), restart Fusion and record again for "
-                        "an MP4.".format(kept))
-        ctrl.push_state()
+            return "Recording cancelled{}.".format(
+                " after {} video(s) in {}".format(len(done), out_dir) if done else "")
+        if done and not kept_frames:
+            return "Video saved: " + done[0] if len(done) == 1 else                 "Saved {} videos in {}".format(len(done), out_dir)
+        if not ffmpeg:
+            return ("No FFmpeg found, so the frames were saved as pictures in {}. Install FFmpeg "
+                    "(e.g. “winget install ffmpeg”), restart Fusion and record again for "
+                    "MP4s.".format(out_dir if len(kept_frames) > 1 else kept_frames[0]))
+        return "FFmpeg couldn't make {} video(s) ({}); their frames are in {}".format(
+            len(failed), failed[0] if failed else "", out_dir)
 
 
 def _keep_frames(folder, out_dir, title):

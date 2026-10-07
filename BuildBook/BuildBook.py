@@ -452,6 +452,9 @@ class Controller:
         if action == "stopPlay":
             self.player.stop()
             return
+        if action == "recordEach":
+            self.player.record_each(data.get("scope", "book"), data.get("id"), bool(data.get("reverse")))
+            return
         if action in ("play", "record"):
             scope, sid, reverse = data.get("scope", "book"), data.get("id"), bool(data.get("reverse"))
             if action == "play":
