@@ -364,6 +364,24 @@
       </div>
     </section>
     <section class="card">
+      <div class="card-head"><h3 data-icon="plug" data-info="Lets an AI agent (e.g. Claude Code) read this build manual, take pictures of its steps and, if you allow it, change it, through MCP. It only listens on this computer, at a private address. Off until you switch it on.">Agent access (MCP)</h3></div>
+      <label class="check"><input type="checkbox" id="mcpEnabled"> Let agents use BuildBook</label>
+      <label class="check" title="Off: agents can read the manual and take pictures. On: they can also add and change sections, steps, parts and explode moves (Ctrl+Z in the panel undoes them).">
+        <input type="checkbox" id="mcpEdit"> Allow changes</label>
+      <div class="mcp-details hidden" id="mcpDetails">
+        <div class="grid two">
+          <div><label for="mcpPort">Port</label><input id="mcpPort" type="number" min="1024" max="65535"></div>
+          <div><label>Status</label><div class="sub" id="mcpStatus"></div></div>
+        </div>
+        <label>Add it to Claude Code (in a terminal)</label>
+        <textarea id="mcpCommand" class="mcp-command" rows="3" readonly></textarea>
+        <div class="actions-row">
+          <button id="btnMcpCopy" class="btn small" data-icon="download" title="Copy the command">Copy</button>
+          <button id="btnMcpToken" class="btn small link" title="A new private address: agents set up with the old one stop working">New address</button>
+        </div>
+      </div>
+    </section>
+    <section class="card">
       <div class="card-head"><h3 data-icon="star" data-info="Your own starting settings, kept on this computer for every design: step views, explode distance, trail lines, annotation style, and the Export tab's image and folder options.">My defaults</h3></div>
       <div class="actions-row">
         <button id="btnSaveDefaults" class="btn" data-icon="star" title="Keep this manual's settings (here and on the Export tab) as your defaults: new manuals start with them">Save as my defaults</button>

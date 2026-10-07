@@ -83,6 +83,16 @@ def distances(mode, count, distance, centers=None, direction=None):
     return [distance * (i + 1) for i in range(count)]
 
 
+def away_axis(vec, tol=1e-6):
+    """("X" / "Y" / "Z", negative?) of the world axis `vec` mostly points along, or None if it's
+    (nearly) zero. Used to move parts away from the assembly's centre."""
+    mags = [abs(v) for v in vec]
+    if max(mags) < tol:
+        return None
+    i = mags.index(max(mags))
+    return "XYZ"[i], vec[i] < 0
+
+
 def to_parent(world_vec, axes):
     """World vector -> parent-component space. `axes` = (x, y, z) world unit axes of the parent."""
     if axes is None:

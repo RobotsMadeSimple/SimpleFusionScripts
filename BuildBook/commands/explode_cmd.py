@@ -71,6 +71,9 @@ class ExplodeCommand:
         self.mouse_down_pos = None   # where the left button went down (a release nearby = a click)
         self.box = boxselect.Box()   # drag-box picking
         self.status_text = None
+        self.dir_touched = False     # the direction was chosen by hand (else it follows the picked parts)
+        self.auto_setting = False    # (setting the inputs ourselves: not a hand choice)
+        self.auto_note = ""
         self.fast_key = None         # layout_key of the last full drawing
         self.activated = False       # the dialog's first activation (later ones: after navigating)
         self.last_input, self.last_input_at = None, 0.0
@@ -388,6 +391,8 @@ class ExplodeCommand:
             position, len(tstep["explodes"]), n, "" if n == 1 else "s")
         if self.pending:
             text += " &nbsp;·&nbsp; {} more move(s) ready to save".format(len(self.pending))
+        if self.auto_note and not self.dir_touched:
+            text += "<br>Direction <b>{}</b>, picked automatically: choose one to change it.".format(self.auto_note)
         text += ("<br>Click a part (or its copy) to add it; click a copy outlined in <b>blue</b> to take "
                  "it out. Drag the arrow to set the distance.")
         self._set_status(status, text)
@@ -568,6 +573,7 @@ class ExplodeCommand:
         else:
             self.pick_path(path, part)
             log.info("explode: clicked {} -> {} added to the move".format(what, path))
+        self.auto_direction()
         self.redraw()
 
     def box_pick(self, sel, remove=False):
@@ -609,6 +615,7 @@ class ExplodeCommand:
         log.info("explode: box ({}) {} {} part(s)".format(
             "crossing" if sel[4] else "window", "took out" if remove else "added", changed))
         if changed:
+            self.auto_direction()
             self.redraw()
 
     def click_copy(self, pos):
@@ -696,6 +703,39 @@ class ExplodeCommand:
         except Exception:
             pass
 
+    def auto_direction(self):
+        """New moves: point the move along the world axis that leads from the middle of the assembly
+        to the picked parts, the way they'd come out (until a direction is chosen by hand)."""
+        if self.dir_touched or self.inputs is None or not self.picked:
+            return
+        try:
+            box = self.ctrl.design().rootComponent.boundingBox
+            middle = ((box.minPoint.x + box.maxPoint.x) / 2.0, (box.minPoint.y + box.maxPoint.y) / 2.0,
+                      (box.minPoint.z + box.maxPoint.z) / 2.0)
+            occs = [o for o in self.picked.values() if o.isValid]
+            centre = explode.centroid([refs.bbox_center(o) for o in occs])
+            found = explode.away_axis(explode.sub(centre, middle))
+            if found is None:
+                return
+            letter, negative = found
+            self.auto_setting = True
+            try:
+                axis = self._input(adsk.core.ButtonRowCommandInput, "axis")
+                for i in range(axis.listItems.count):
+                    if axis.listItems.item(i).name == letter:
+                        axis.listItems.item(i).isSelected = True
+                dist = self._input(adsk.core.DistanceValueCommandInput, "distance")
+                want = -abs(dist.value) if negative else abs(dist.value)
+                if dist.value != want:
+                    dist.value = want
+            finally:
+                self.auto_setting = False
+            self.arrow_place = None
+            self.auto_note = "{}{} (away from the middle of the assembly)".format("\u2212" if negative else "+", letter)
+            log.info("explode: direction picked automatically: " + self.auto_note)
+        except Exception:
+            log.error("explode: automatic direction")
+
     def pick_path(self, path, occ=None):
         if occ is None:
             occ = refs.path_index(self.ctrl.design()).get(path)
@@ -736,6 +776,7 @@ class ExplodeCommand:
         self.trail_touched = False
         self._input(adsk.core.StringValueCommandInput, "name").value = ""
         self.picked = {}
+        self.dir_touched = False             # (its parts will choose its direction)
         self.refresh()
 
     def save(self):
@@ -935,6 +976,8 @@ class _Created(adsk.core.CommandCreatedEventHandler):
             nudge = inputs.addBoolValueInput("nudge", "", True, "", False)
             nudge.isVisible = False
 
+            owner.dir_touched = owner.explode_id is not None      # (an existing move keeps its direction)
+            owner.auto_direction()
             ctrl.scene.sticky = True
             ctrl.held_step = owner.step_id  # (picking "Along" shows the whole model: the panel keeps the step)
             owner.refresh()
@@ -1304,6 +1347,8 @@ class _InputChanged(adsk.core.InputChangedEventHandler):
             elif cid == "repickAlong":
                 owner.use_new_along()
             elif cid == "axis":
+                if not owner.auto_setting:
+                    owner.dir_touched = True        # chosen by hand: no more automatic direction
                 pick = owner._input(adsk.core.SelectionCommandInput, "dirEntity")
                 if changed.selectedItem.name != PICKED and owner.saved_along:
                     owner.saved_along = False
@@ -1318,6 +1363,7 @@ class _InputChanged(adsk.core.InputChangedEventHandler):
                 owner.dragged = True
                 owner.distance_touched = True   # dragged / typed: this move has its own distance now
             elif cid == "flipDistance":
+                owner.dir_touched = True
                 dist = owner._input(adsk.core.DistanceValueCommandInput, "distance")
                 if params.is_expression(_expression(dist)):
                     dist.expression = params.flip(_expression(dist))  # (keeps the parameter)

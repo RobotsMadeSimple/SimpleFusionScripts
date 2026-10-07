@@ -275,8 +275,8 @@ class Scene:
                 offset = (0.0, 0.0, 0.0)
                 desired = mode_for[model.leaf_state(manual, step["id"], path)]
             plans.append((occ, bodies, desired, offset))
-            if edit and desired in ("exploded", PREVIEW):
-                places.append((path, occ, offset))
+            if desired in ("exploded", PREVIEW):
+                places.append((path, occ, offset))     # (where each drawn copy is: picking, framing)
 
         # Root-component bodies count as unassigned.
         root_bodies = [b for b in design.rootComponent.bRepBodies

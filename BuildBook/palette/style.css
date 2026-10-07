@@ -435,6 +435,11 @@ ul.list li { padding: 6px 10px; gap: 10px; }
 .play-bar .spacer { flex: 1; }
 .play-bar.playing { border-color: var(--accent); }
 .play-bar.playing [data-play] { display: none; }
+.step .thumb { position: relative; }
+.step .thumb .stale { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%;
+                      background: #e8902a; box-shadow: 0 0 0 1.5px var(--surface); }
+ul.changes { margin: 4px 0 0; padding-left: 18px; }
+.mcp-command { width: 100%; font-family: Consolas, monospace; font-size: 11px; resize: none; }
 .add-section { width: 100%; margin: 0 0 12px; padding: 10px 8px; background: var(--surface); }
 
 .add-section.first { background: var(--accent); border: 1px solid var(--accent); color: var(--on-accent); font-weight: 600; }

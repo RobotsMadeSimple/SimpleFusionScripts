@@ -36,7 +36,7 @@
 
   // Actions that open a Fusion dialog or only select: no busy bar (the reply
   // may not come until the dialog closes).
-  var NO_BUSY = ['play', 'stopPlay', 'hoverExplode', 'pick', 'editLines', 'addExplode', 'editExplode', 'setAnchor', 'selectItems', 'hoverExplode',
+  var NO_BUSY = ['setMcp', 'play', 'stopPlay', 'hoverExplode', 'pick', 'editLines', 'addExplode', 'editExplode', 'setAnchor', 'selectItems', 'hoverExplode',
                  'checkItems', 'exportManual', 'importManual', 'chooseExportFolder', 'openExportFolder', 'ready'];
 
   var ICON = {
@@ -291,6 +291,23 @@
 
   function renderWarnings() {
     var parts = [];
+    // The design changed since previews / pictures were taken, or new parts appeared.
+    var ch = state.changes || { previews: [], exports: [], newParts: [] };
+    var rows = [];
+    if (ch.previews.length) {
+      rows.push(ch.previews.length + ' step preview' + (ch.previews.length === 1 ? ' is' : 's are') +
+        ' out of date <button class="btn link" data-change="refreshThumbs">Refresh previews</button>');
+    }
+    if (ch.exports.length) {
+      rows.push(ch.exports.length + ' exported picture' + (ch.exports.length === 1 ? ' is' : 's are') +
+        ' out of date <button class="btn link" data-change="exportAll">Export all again</button>');
+    }
+    if (ch.newParts.length) {
+      rows.push(ch.newParts.length + ' new part' + (ch.newParts.length === 1 ? ' isn\'t' : 's aren\'t') +
+        ' in any step yet <button class="btn link" data-change="parts">Show</button>' +
+        ' <button class="btn link" data-change="ack">Got it</button>');
+    }
+    if (rows.length) parts.push('<b>The design changed</b><ul class="changes"><li>' + rows.join('</li><li>') + '</li></ul>');
     if (state.missing.length) {
       parts.push('<b>' + state.missing.length + ' part(s) no longer in the design</b><ul>' +
         state.missing.slice(0, 8).map(function (m) {
@@ -300,6 +317,16 @@
     $('warnings').innerHTML = parts.join('');
     $('warnings').classList.toggle('hidden', !parts.length);
   }
+
+  $('warnings').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-change]');
+    if (!b) return;
+    var what = b.getAttribute('data-change');
+    if (what === 'refreshThumbs') { setBusy(true); send('refreshThumbs'); }
+    else if (what === 'exportAll') send('exportAll');
+    else if (what === 'ack') send('ackChanges');
+    else if (what === 'parts') showTab('parts');
+  });
 
   function thumbStyle(id) {
     var url = state.thumbs && state.thumbs[id];
@@ -331,7 +358,9 @@
         var thumb = state.thumbs && state.thumbs[st.id];
         return '<div class="step' + (st.id === state.currentStepId ? ' active' : '') + '" data-step="' + st.id + '" data-act="open">' +
           '<span class="grip" title="Drag to reorder (or into another section)">' + ICON.grip + '</span>' +
-          '<span class="thumb"' + thumbStyle(st.id) + '>' + (thumb ? '' : label) + '</span>' +
+          '<span class="thumb"' + thumbStyle(st.id) + '>' + (thumb ? '' : label) +
+            ((state.changes && state.changes.previews.indexOf(st.id) >= 0) ?
+              '<i class="stale" title="Preview out of date: the design changed since it was taken"></i>' : '') + '</span>' +
           // Title, with its prep / repeat chips on a line underneath
           '<span class="name step-title"><span class="step-name" title="' + esc(st.title) + '">' +
             '<span class="step-num">' + label + '</span>' + esc(st.title) + '</span>' +
@@ -1110,6 +1139,16 @@
     $('setTrailStyle').value = s.trail.style;
     $('setEdges').checked = !!s.drawEdges;
     $('setShortHw').checked = s.shortHardwareNames !== false;
+    var mcp = state.mcp || {};
+    $('mcpEnabled').checked = !!mcp.enabled;
+    $('mcpEdit').checked = !!mcp.edit;
+    $('mcpEdit').disabled = !mcp.enabled;
+    $('mcpDetails').classList.toggle('hidden', !mcp.enabled);
+    if (document.activeElement !== $('mcpPort')) $('mcpPort').value = mcp.port || 8765;
+    $('mcpStatus').textContent = !mcp.enabled ? 'Off' : mcp.running ? 'Listening' + (mcp.edit ? ' (changes allowed)' : ' (read only)')
+      : (mcp.error || 'Not running');
+    $('mcpStatus').classList.toggle('warn-text', !!mcp.enabled && !mcp.running);
+    $('mcpCommand').value = 'claude mcp add --transport http buildbook ' + (mcp.url || '');
     var an = s.animation || {};
     var scopeWas = $('recScope').value;
     $('recScope').innerHTML = '<option value="">Whole book</option>' + state.manual.sections.map(function (sec, i) {
@@ -1189,6 +1228,21 @@
   }
 
   function settings(patch) { send('setSettings', { settings: patch }); }
+  $('mcpEnabled').addEventListener('change', function (e) { send('setMcp', { enabled: e.target.checked }); });
+  $('mcpEdit').addEventListener('change', function (e) { send('setMcp', { edit: e.target.checked }); });
+  $('mcpPort').addEventListener('change', function (e) {
+    var v = parseInt(e.target.value, 10);
+    if (v) send('setMcp', { port: v });
+  });
+  $('btnMcpCopy').addEventListener('click', function () {
+    var box = $('mcpCommand');
+    box.focus();
+    box.select();
+    try { document.execCommand('copy'); } catch (err) { /* (selected: Ctrl+C works) */ }
+  });
+  $('btnMcpToken').addEventListener('click', function (e) {
+    armed(e.currentTarget, function () { send('setMcp', { newToken: true }); });
+  });
   $('playBar').addEventListener('click', function (e) {
     var b = e.target.closest('[data-play]');
     if (!b) return;

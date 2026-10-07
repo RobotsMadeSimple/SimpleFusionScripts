@@ -18,21 +18,22 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from .lib import log, paths
+from .lib import log, mcp_server, paths
 
 # Everything else loads the first time BuildBook is opened (_load_modules): Fusion loads every
 # add-in at start-up, and Autodesk asks for run() to take under 5 ms and only hook up the button.
 anchor_cmd = explode_cmd = lines_cmd = pick_cmd = animate = None
-capture = crop = explode = hardware = hidden_record = userprefs = manual_pdf = model = params = None
+capture = crop = explode = hardware = hidden_record = userprefs = manual_pdf = model = params = freshness = None
 partthumbs = pictures = refs = scene_mod = Scene = CropOverlay = None
 
 
 def _load_modules():
     global anchor_cmd, explode_cmd, lines_cmd, pick_cmd, animate, capture, crop, explode, hardware
-    global params, hidden_record, userprefs, manual_pdf, model, partthumbs, pictures, refs, scene_mod, Scene, CropOverlay
+    global params, freshness, hidden_record, userprefs, manual_pdf, model, partthumbs, pictures, refs, scene_mod, Scene, CropOverlay
     from .commands import anchor_cmd, explode_cmd, lines_cmd, pick_cmd
     from .lib import animate
     from .lib import params
+    from .lib import freshness
     from .lib import (capture, crop, explode, hardware, hidden_record, userprefs, manual_pdf, model,
                       partthumbs, pictures, refs)
     from .lib import scene as scene_mod
@@ -50,6 +51,7 @@ RELOAD_EVENT = "buildBookReload"       # custom event: reload the add-in's code 
 _handlers = []
 _events = []          # (event, handler) pairs, for reload_addin
 _ctrl = None
+_mcp = None             # agent access (lib/mcp_server.py), when switched on in Settings
 
 
 UNDO_LIMIT = 30              # deletions Ctrl+Z can take back
@@ -75,6 +77,7 @@ class Controller:
         self.held_step = None       # step a dialog (Pick, Explode) is working on while it clears the view
         self.player = animate.Player(self)  # playing / recording the build
         self.camera_moved_at = 0.0  # last camera change (panning / orbiting)
+        self._geo = None            # the design's geometry fingerprint (freshness.geometry), until it changes
 
     # ------------------------------------------------------------ design + storage
 
@@ -125,7 +128,28 @@ class Controller:
     def save(self, manual):
         design = self.design()
         if design is not None:
+            if manual.get("knownParts") is None:
+                # The parts the manual "knows" (the change report lists parts added after this).
+                manual["knownParts"] = sorted(refs.path_index(design).keys())
             design.attributes.add(ATTR_GROUP, ATTR_NAME, model.to_json(manual))
+
+    def geometry(self):
+        if self._geo is None:
+            design = self.design()
+            self._geo = freshness.geometry(design) if design is not None else ""
+        return self._geo
+
+    def mark_fresh(self, step_ids, export=False):
+        """Note that these steps' previews (and exported pictures) match the design as it is now."""
+        manual = self.load()
+        geo = self.geometry()
+        for _, st in model.ordered_steps(manual):
+            if st["id"] in step_ids:
+                fp = freshness.step_print(manual, st, geo)
+                st["thumbFp"] = fp
+                if export:
+                    st["exportFp"] = fp
+        self.save(manual)
 
     # ------------------------------------------------------------ viewing
 
@@ -299,6 +323,13 @@ class Controller:
 
         if step is not None:
             log.info("TIME  state: step details {:.0f} ms".format((time.perf_counter() - started) * 1000))
+        unassigned = self._timed("state: unassigned list", self._unassigned_with_thumbs, manual, index)
+        try:
+            changes = freshness.report(manual, self.geometry(),
+                                       [u["path"] for u in unassigned if not u.get("group")])
+        except Exception:
+            log.error("change report")
+            changes = {"previews": [], "exports": [], "newParts": []}
         return {
             "error": "",
             "document": self.app.activeDocument.name if self.app.activeDocument else "",
@@ -306,14 +337,16 @@ class Controller:
             "currentStepId": self.current_step_id(),
             "edit": self.scene.edit,
             "step": detail,
-            "unassigned": self._timed("state: unassigned list", self._unassigned_with_thumbs, manual, index),
+            "unassigned": unassigned,
             "missing": missing,
+            "changes": changes,
             "units": length_units,
             "manualDefault": shown(manual["settings"]["defaultDistance"]),
             "manualDefaultExpr": manual["settings"].get("defaultDistanceExpr") or "",
             "myDefaults": userprefs.exists(),
             "branding": userprefs.effective_branding(manual["settings"]),
             "playing": self.player.playing,
+            "mcp": _mcp_status(),
             "brandingLocked": sorted(userprefs.locked_fields(manual["settings"])),
             "brandingDefaults": {k: bool(v) for k, v in userprefs.branding().items()},
             "exportFolder": capture.export_folder(manual),
@@ -531,6 +564,7 @@ class Controller:
         elif action == "saveCamera" and step:
             step["camera"] = capture.current_camera(self.app.activeViewport, manual["settings"].get("image", {}).get("ratio"))
             capture.save_thumbnail(self, step["id"])
+            step["thumbFp"] = freshness.step_print(manual, step, self.geometry())
             self.notify("View saved for \u201c{}\u201d.".format(step["title"]))
         elif action == "clearCamera" and step:
             step["camera"] = None
@@ -632,6 +666,25 @@ class Controller:
                 palette.sendInfoToHTML("logoPicked", json.dumps(
                     {"url": "data:{};base64,{}".format(mime, base64.b64encode(raw).decode("ascii"))}))
             return
+        elif action == "setMcp":
+            config = mcp_server.settings()
+            for key in ("enabled", "edit"):
+                if key in data:
+                    config[key] = bool(data[key])
+            if data.get("port"):
+                config["port"] = max(1024, min(65535, int(data["port"])))
+            if data.get("newToken"):
+                import secrets
+                config["token"] = secrets.token_urlsafe(18)
+            mcp_server.save(config)
+            _mcp_apply()
+            log.info("mcp: {} ({} changes)".format("on" if config["enabled"] else "off",
+                                                   "with" if config["edit"] else "no"))
+            self.push_state()
+            return
+        elif action == "ackChanges":
+            # "Got it": the parts in the design now are the ones the manual knows.
+            manual["knownParts"] = sorted(refs.path_index(self.design()).keys())
         elif action == "refreshThumbs":
             self._refresh_thumbnails(manual)
             return
@@ -953,9 +1006,11 @@ class Controller:
             # Remember what's been exported, for the step list's progress.
             fresh = self.load()
             stamp = time.strftime("%Y-%m-%d %H:%M")
+            geo = self.geometry()
             for _, st in model.ordered_steps(fresh):
                 if st["id"] in done:
                     st["exportedAt"] = stamp
+                    st["thumbFp"] = st["exportFp"] = freshness.step_print(fresh, st, geo)
             self.save(fresh)
         if written:
             msg = "Saved {} to {}".format(
@@ -1017,12 +1072,14 @@ class Controller:
         progress.isCancelButtonShown = True
         progress.show("BuildBook", "Taking thumbnail %v of %m...", 0, total, 0)
         done = 0
+        refreshed = []
         try:
             for step in steps:
                 if progress.wasCancelled:
                     break
                 self.show_step(step["id"], move_camera=True, smooth=False)
                 capture.save_thumbnail(self, step["id"])
+                refreshed.append(step["id"])
                 done += 1
                 progress.progressValue = done
             for kind, pid in pics:
@@ -1042,6 +1099,8 @@ class Controller:
                 self.close_view()
             capture.apply_camera(self.app.activeViewport, camera, smooth=False)
         skipped = len([st for _, st in model.ordered_steps(manual) if not st.get("camera")])
+        if refreshed:
+            self.mark_fresh(set(refreshed))
         self.notify("Refreshed {} thumbnail{}{}.".format(done, "" if done == 1 else "s",
                     " ({} step{} without a saved view skipped)".format(skipped, "" if skipped == 1 else "s")
                     if skipped else ""))
@@ -1431,6 +1490,7 @@ class Controller:
             self.show_step(step_id)
 
     def on_document_switch(self):
+        self._geo = None
         self.player.stop()
         self.undo_stack = []                # (undo is per design)
         refs.forget_document()          # (hardware labels are per component: kept)
@@ -1666,6 +1726,7 @@ class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
                 return
             log.info("after Fusion command {}: refreshing the panel".format(cmd))
             refs.forget_missing()           # parts found again after an update show again
+            _ctrl._geo = None               # (the design may have changed: its fingerprint too)
             if _ctrl.scene.active and not _ctrl.scene.edit and _uses_parameters(_ctrl.load()):
                 # (a parameter may have changed: moves that follow one are drawn again)
                 _ctrl.show_step(_ctrl.scene.step_id, upto=_ctrl.scene.upto)
@@ -1775,9 +1836,55 @@ def run(context):
         panel = ui.allToolbarPanels.itemById("SolidScriptsAddinsPanel")
         if panel and not panel.controls.itemById(COMMAND_ID):
             panel.controls.addCommand(cmd_def)
+        _mcp_apply()
     except Exception:
         log.error("run")
         ui.messageBox("BuildBook failed to start:\n{}".format(traceback.format_exc()))
+
+
+def _mcp_apply():
+    """Start / stop agent access to match its setting (off unless switched on in Settings)."""
+    global _mcp
+    app = adsk.core.Application.get()
+    config = mcp_server.settings()
+    if not config["enabled"]:
+        if _mcp is not None:
+            _mcp.stop()
+        return
+    if _mcp is None:
+        try:
+            app.unregisterCustomEvent(mcp_server.EVENT)
+        except Exception:
+            pass
+        _add(app.registerCustomEvent(mcp_server.EVENT), McpCallHandler())
+        _mcp = mcp_server.Server(lambda: adsk.core.Application.get().fireCustomEvent(mcp_server.EVENT, ""))
+    _mcp.start(config)
+
+
+def _mcp_status():
+    config = mcp_server.settings()
+    return {"enabled": config["enabled"], "edit": config["edit"], "port": config["port"],
+            "url": mcp_server.url(config), "running": bool(_mcp is not None and _mcp.running),
+            "error": _mcp.error if _mcp is not None else ""}
+
+
+class McpCallHandler(adsk.core.CustomEventHandler):
+    """An agent's tool calls, on Fusion's main thread."""
+
+    def notify(self, args):
+        try:
+            _start()                        # (BuildBook may not have been opened yet)
+            from .lib import mcp_tools
+            allow_edit = mcp_server.settings()["edit"]
+
+            def runner(name, arguments):
+                if name == "__list__":
+                    return mcp_tools.definitions(allow_edit)
+                return mcp_tools.run(_ctrl, name, arguments, allow_edit)
+            if _mcp is not None:
+                _mcp.run_pending(runner)
+        except Exception:
+            log.error("mcp call")
 
 
 def _start():
@@ -1839,9 +1946,16 @@ def _start():
 
 
 def stop(context):
-    global _ctrl
+    global _ctrl, _mcp
     if not _mine():
         return
+    if _mcp is not None:
+        _mcp.stop()
+        _mcp = None
+        try:
+            adsk.core.Application.get().unregisterCustomEvent(mcp_server.EVENT)
+        except Exception:
+            pass
     _release()                  # (a reload claims it again in run)
     app = adsk.core.Application.get()
     ui = app.userInterface

@@ -308,6 +308,11 @@ class ExplodeTests(unittest.TestCase):
     def test_stacked_selection_order(self):
         self.assertEqual(explode.distances(explode.STACKED_SELECTION, 3, 1.5), [1.5, 3.0, 4.5])
 
+    def test_away_axis(self):
+        self.assertEqual(explode.away_axis((0.2, -3.0, 1.0)), ("Y", True))
+        self.assertEqual(explode.away_axis((0.0, 0.0, 5.0)), ("Z", False))
+        self.assertIsNone(explode.away_axis((0.0, 0.0, 0.0)))
+
     def test_stacked_level_parts_share_a_tier(self):
         # Two screws level with each other (same Z), a washer below them: washer 1x, screws 2x.
         centers = [(0, 0, 5.0), (3, 0, 5.004), (0, 0, 2.0)]
