@@ -10,8 +10,10 @@ holes and projects them into each view; this decides what's drawn:
   reddish purple...), dowels get the quartered-circle symbol;
 - each size (and each dowel diameter) gets one callout, "2x M3", with an arrow to
   one of its holes. Callouts the user moved keep their place (and their arrow's hole,
-  and their text if they changed it); new ones are placed near their hole, pointing
-  away from the part's middle.
+  and their text if they changed it); new ones go beside the part, in the room left
+  and right of it (side_room), on the side nearer their hole, clear of each other;
+- labels are sized for the page: page_layout() puts the views in the rows that show them biggest on
+  a page (at most PAGE_W x PAGE_H), and label_scale() makes the text LABEL_PX tall there.
 
 Coordinates are 0..1 of the view's (cropped) image, y down, as in palette/annot_draw.js.
 """
@@ -35,7 +37,14 @@ TAP_DRILLS = [(1.6, "M2"), (2.05, "M2.5"), (2.5, "M3"), (3.3, "M4"), (4.2, "M5")
               (6.8, "M8"), (8.5, "M10"), (10.2, "M12")]
 TAP_TOLERANCE = 0.06            # mm
 
-TEXT = {"color": "#222222", "size": 40, "bold": True, "box": True, "leader": True, "weight": 12}
+TEXT = {"color": "#222222", "size": 48, "bold": True, "box": True, "leader": True, "weight": 9}
+CHAR_W = 0.62           # average width of a bold Helvetica character, in text heights
+EDGE = 0.015            # labels' distance from the image's side (0..1 of the view's width)
+GAP = 0.12              # room between a label and the part (in image heights, at TEXT's size; grows with it)
+PAGE_W, PAGE_H = 860, 330      # px: the most a page shows an image at (wider ones shrink to PAGE_W)
+LABEL_PX = 32           # px: a label's text height on the page, at that size
+MAX_ROWS = 4
+MAX_SCALE = 8.0
 MARK_OUTLINE = "#333333"
 
 
@@ -98,6 +107,99 @@ def _dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def _pack(aspects, n, gap):
+    """Views (in order) into about n rows of even width; the last view (the shaded one) always ends
+    the last row, on the right."""
+    total = sum(aspects) + gap * max(0, len(aspects) - 1)
+    target = total / n
+    out, width = [], 0.0
+    for i, a in enumerate(aspects):
+        last = i == len(aspects) - 1 and out
+        if out and (last or width + gap + a / 2.0 <= target):
+            out[-1].append(i)
+            width += gap + a
+        else:
+            out.append([i])
+            width = a
+    return out
+
+
+def _row_aspect(aspects, row, gap):
+    return sum(aspects[i] for i in row) + gap * max(0, len(row) - 1)
+
+
+def page_layout(aspects, gap=0.04):
+    """(rows, row height on the page in px) for views with these width / height ratios (gaps as a
+    fraction of a row's height): the rows (1..MAX_ROWS) that give each row the most height when a page
+    shows the image at most PAGE_W wide and PAGE_H tall, so its labels can be read."""
+    best = None
+    for n in range(1, min(MAX_ROWS, len(aspects)) + 1):
+        layout = _pack(aspects, n, gap)
+        k = len(layout)
+        wide = max(_row_aspect(aspects, r, gap) for r in layout)
+        tall = k + gap * (k - 1)                        # (image height, in row heights)
+        shown = min(float(PAGE_H), PAGE_W * tall / wide)  # (its height on the page)
+        row_px = shown / tall
+        if best is None or row_px > best[1] * 1.05:     # (more rows only for a real gain)
+            best = (layout, row_px)
+    return best or ([], float(PAGE_H))
+
+
+def rows(aspects, gap=0.04):
+    """The stitched image's rows: [[view index, ...], ...] (page_layout)."""
+    return page_layout(aspects, gap)[0]
+
+
+def label_scale(aspects, gap=0.04):
+    """How big labels must be (as a multiple of TEXT's size, which is in 1/1000 of a row's height) for
+    their text to come out LABEL_PX tall on the page (page_layout); never smaller than TEXT's size."""
+    if not aspects:
+        return 1.0
+    row_px = page_layout(aspects, gap)[1]
+    return max(1.0, min(MAX_SCALE, LABEL_PX * 1000.0 / (TEXT["size"] * max(row_px, 1.0))))
+
+
+def label_width(text, size):
+    """A label's width in image heights (size: text height in 1/1000 of the image height), its box included."""
+    longest = max((len(line) for line in str(text).splitlines()), default=0)
+    return (CHAR_W * longest + 0.6) * size / 1000.0
+
+
+def label_side(xs):
+    """"left" or "right": the side of the view nearer a group of holes (their x, 0..1 of the view)."""
+    return "left" if min(xs) <= 1.0 - max(xs) else "right"
+
+
+def side_room(labels, scale, part_aspect):
+    """Padding for a view's sides (fractions of the part's width on screen, as holes.project takes it)
+    so its labels fit beside the part: labels = [(text, "left"|"right")]; each side gets room for
+    its widest label plus a gap for the arrow, and none if it has no label."""
+    room = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
+    for text, side in labels:
+        need = (label_width(text, TEXT["size"] * scale) + GAP * scale + EDGE) / max(part_aspect, 1e-3)
+        room[side] = max(room[side], need)
+    return room
+
+
+def _place_side(target, text, size, aspect, taken, side=None):
+    """A new label's top-left: in the room beside the part on `side` (default: the side nearer its
+    hole), level with the hole, inside the image and clear of the labels already placed."""
+    w = label_width(text, size) / max(aspect, 1e-3)              # (0..1 of the view's width)
+    h = (1.25 + 0.6) * size / 1000.0                             # (0..1 of its height, box included)
+    left = (side == "left") if side else target[0] <= 0.5
+    x = EDGE if left else max(EDGE, 1.0 - EDGE - w)
+    y = min(max(0.01, target[1] - h / 2), 0.99 - h)
+    for _ in range(40):                     # step clear of the labels on the same side
+        clash = [t for t in taken if t[0] == left and abs(t[1] - y) < h * 1.15]
+        if not clash:
+            break
+        y = max(c[1] for c in clash) + h * 1.2
+        if y > 0.99 - h:
+            y = 0.01 + (y - (0.99 - h)) % max(0.01, 0.98 - h)
+    taken.append((left, y))
+    return x, y
+
+
 def _place_text(target, centre, taken):
     """Where a new callout's text goes: out from the part's middle, past its hole, clear of others."""
     dx, dy = target[0] - centre[0], target[1] - centre[1]
@@ -114,7 +216,7 @@ def _place_text(target, centre, taken):
     return x, y
 
 
-def build(view, holes, assigned, previous=None, colors=None):
+def build(view, holes, assigned, previous=None, colors=None, aspect=None, scale=1.0, sides=None):
     """The annotations of one view.
 
     view: {"id", "kind": "thread"|"shaded"}.
@@ -122,6 +224,9 @@ def build(view, holes, assigned, previous=None, colors=None):
              "outline": [[x, y], ...], "r": radius (0..1 of the image width)}] -- those visible here.
     assigned: {hole id: view id} (assign()).
     previous: the view's annotations as last saved (the user's own, and moved callouts).
+    aspect: the view's width / height: new labels go beside the part (_place_side); None = the old
+    placement near their hole. scale: label_scale() of the whole image. sides: {(kind, label): "left" |
+    "right"}, the side each label goes on (where side_room made room); default the nearer side.
     Returns user annotations (kept as they are) + auto ones (each with "auto": "hole:<id>",
     "dowel:<id>" or "callout:<kind>:<label>", locked for hole marks).
     """
@@ -145,7 +250,7 @@ def build(view, holes, assigned, previous=None, colors=None):
         groups.setdefault((h["kind"], h["label"]), []).append(h)
     centre = (sum(h["center"][0] for h in mine) / len(mine), sum(h["center"][1] for h in mine) / len(mine)) \
         if mine else (0.5, 0.5)
-    taken = []
+    taken, placed = [], []
     for (kind, label), group in sorted(groups.items(), key=lambda kv: (kv[0][0] == "dowel", size_key(kv[0][1]))):
         key = "callout:{}:{}".format(kind, label)
         text = "{}x {}".format(len(group), label + (" dowel" if kind == "dowel" else ""))
@@ -160,10 +265,21 @@ def build(view, holes, assigned, previous=None, colors=None):
                 note["text"] = text
             note["count"] = len(group)
         else:
-            target = min(group, key=lambda h: (h["center"][1], h["center"][0]))     # the top one
-            x, y = _place_text(target["center"], centre, taken)
-            note = dict(TEXT, type="text", auto=key, text=text, x1=x, y1=y, x2=target["center"][0],
-                        y2=target["center"][1], target=target["id"], count=len(group))
+            if aspect:
+                # the label goes beside the part on its side, level with the group's hole nearest that side
+                side = (sides or {}).get((kind, label)) or label_side([h["center"][0] for h in group])
+                target = min(group, key=lambda h: (h["center"][0] if side == "left" else -h["center"][0],
+                                                   h["center"][1]))
+                size = TEXT["size"] * scale
+                x, y = _place_side(target["center"], text, size, aspect, placed, side)
+                note = dict(TEXT, type="text", auto=key, text=text, x1=x, y1=y, x2=target["center"][0],
+                            y2=target["center"][1], target=target["id"], count=len(group),
+                            size=round(size, 1), weight=round(TEXT["weight"] * scale, 1))
+            else:
+                target = min(group, key=lambda h: (h["center"][1], h["center"][0]))     # the top one
+                x, y = _place_text(target["center"], centre, taken)
+                note = dict(TEXT, type="text", auto=key, text=text, x1=x, y1=y, x2=target["center"][0],
+                            y2=target["center"][1], target=target["id"], count=len(group))
         taken.append((note["x1"], note["y1"]))
         out.append(note)
     return own + out

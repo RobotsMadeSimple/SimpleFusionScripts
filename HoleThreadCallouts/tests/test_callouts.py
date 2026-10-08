@@ -117,5 +117,59 @@ class RemapTests(unittest.TestCase):
         self.assertEqual(callouts.remap([a], None, new), [a])            # first render: nothing to move
 
 
+
+class LabelTests(unittest.TestCase):
+    def test_labels_come_out_page_sized(self):
+        for aspects in ([1.0, 1.2], [2.0, 2.0, 1.5], [5.0, 1.0], [0.8, 0.8, 1.4, 1.4, 1.6]):
+            layout, row_px = callouts.page_layout(aspects)
+            size = callouts.TEXT["size"] * callouts.label_scale(aspects)
+            self.assertAlmostEqual(size / 1000.0 * row_px, callouts.LABEL_PX, delta=0.5)
+
+    def test_wide_images_wrap_and_the_shaded_view_stays_last(self):
+        layout, _ = callouts.page_layout([0.8, 0.8, 1.4, 1.4, 1.6])
+        self.assertGreater(len(layout), 1)
+        self.assertEqual(layout[-1][-1], 4)
+        self.assertEqual(sorted(i for r in layout for i in r), [0, 1, 2, 3, 4])
+        self.assertEqual(callouts.rows([1.0, 1.0]), [[0, 1]])           # small: one row
+
+    def test_room_beside_the_part(self):
+        room = callouts.side_room([("4x M3", "left")], 1.0, 1.0)
+        self.assertGreater(room["left"], callouts.label_width("4x M3", callouts.TEXT["size"]))
+        self.assertEqual(room["right"], 0.0)                  # no label there: no room
+        both = callouts.side_room([("4x M3", "left"), ("2x M5", "right")], 1.0, 1.0)
+        self.assertGreater(both["right"], 0.0)
+        self.assertEqual(callouts.side_room([], 1.0, 1.0)["left"], 0.0)
+        self.assertLess(callouts.side_room([("4x M3", "left")], 1.0, 4.0)["left"], room["left"])  # wide part
+
+    def test_label_side(self):
+        self.assertEqual(callouts.label_side([0.2, 0.6]), "left")
+        self.assertEqual(callouts.label_side([0.7, 0.9]), "right")
+
+    def test_labels_beside_the_part_on_the_nearer_side(self):
+        view = {"id": "v1", "kind": "thread"}
+        holes = [hole("a", 0.3, 0.5), hole("b", 0.7, 0.5, "M5")]
+        anns = callouts.build(view, holes, {"a": "v1", "b": "v1"}, aspect=1.5, scale=1.5)
+        forced = callouts.build(view, holes, {"a": "v1", "b": "v1"}, aspect=1.5,
+                                sides={("thread", "M3"): "right"})
+        self.assertGreater([a for a in forced if a.get("text") == "1x M3"][0]["x1"], 0.5)
+        texts = {a["text"]: a for a in anns if a["type"] == "text"}
+        m3, m5 = texts["1x M3"], texts["1x M5"]
+        self.assertLess(m3["x1"], 0.1)                       # left edge, beside hole a
+        w = callouts.label_width("1x M5", m5["size"]) / 1.5
+        self.assertAlmostEqual(m5["x1"] + w, 1 - callouts.EDGE, places=6)      # right edge
+        self.assertEqual(m3["size"], callouts.TEXT["size"] * 1.5)
+        self.assertEqual((m3["x2"], m3["y2"]), (0.3, 0.5))    # arrow to its hole
+
+    def test_labels_on_one_side_do_not_overlap(self):
+        view = {"id": "v1", "kind": "thread"}
+        holes = [hole("a", 0.2, 0.5), hole("b", 0.25, 0.5, "M4"), hole("c", 0.3, 0.5, "M5")]
+        anns = [a for a in callouts.build(view, holes, {"a": "v1", "b": "v1", "c": "v1"}, aspect=1.0)
+                if a["type"] == "text"]
+        ys = sorted(a["y1"] for a in anns)
+        h = 1.85 * callouts.TEXT["size"] / 1000.0
+        self.assertTrue(all(b - a >= h for a, b in zip(ys, ys[1:])))
+        self.assertTrue(all(0 <= y <= 1 - h for y in ys))
+
+
 if __name__ == "__main__":
     unittest.main()

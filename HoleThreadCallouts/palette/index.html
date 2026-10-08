@@ -71,6 +71,17 @@
     <p class="hint">Saves a PNG and copies it to the clipboard.</p>
     <div class="folder hidden" id="folder"></div>
   </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Agent access (MCP)</h3></div>
+    <label class="check"><input type="checkbox" id="mcpEnabled"><span>Let AI agents (e.g. Claude Code) list holes and export callout images. Listens on this computer only.</span></label>
+    <div class="hidden" id="mcpDetails">
+      <p class="hint" id="mcpStatus"></p>
+      <textarea id="mcpCommand" class="mcp-command" rows="3" readonly></textarea>
+      <div class="actions-row"><button class="btn small" id="mcpCopy" title="Copy the command that adds this to Claude Code">Copy command</button>
+        <button class="btn small" id="mcpToken" title="A new private address: agents set up with the old one stop working">New address</button></div>
+    </div>
+  </div>
 </div>
 
 <svg width="0" height="0" style="position:absolute"><defs>

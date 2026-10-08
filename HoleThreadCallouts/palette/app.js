@@ -11,7 +11,7 @@
   var SIZES = ['M2.5', 'M3', 'M4', 'M5', 'M6', 'M8', 'M10'];
   var FALLBACK_COLORS = { 'M2': '#009E73', 'M2.5': '#0072B2', 'M3': '#F0E442', 'M4': '#56B4E9', 'M5': '#E69F00',
                           'M6': '#CC79A7', 'M8': '#D55E00', 'M10': '#0072B2' };
-  var NO_BUSY = ['ready', 'settings', 'stitched'];
+  var NO_BUSY = ['ready', 'settings', 'stitched', 'setMcp'];
 
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) {
@@ -298,6 +298,11 @@
     var s = state.settings || {};
     setValue($('height'), s.height);
     setValue($('gap'), s.gap);
+    var mcp = state.mcp || {};
+    $('mcpEnabled').checked = !!mcp.enabled;
+    $('mcpDetails').classList.toggle('hidden', !mcp.enabled);
+    $('mcpStatus').textContent = mcp.running ? 'Listening on port ' + mcp.port + '.' : (mcp.error || 'Not running.');
+    $('mcpCommand').value = 'claude mcp add --transport http holethreadcallouts ' + (mcp.url || '');
     var f = $('folder');
     if (s.folder) { f.textContent = s.folder; f.title = s.folder; f.classList.remove('hidden'); }
     else f.classList.add('hidden');
@@ -354,6 +359,13 @@
   $('error').addEventListener('click', function () { if (state && state.error) return; showError(''); });
   $('addThread').addEventListener('click', function () { send('addView', { kind: 'thread' }); });
   $('addShaded').addEventListener('click', function () { send('addView', { kind: 'shaded' }); });
+  $('mcpEnabled').addEventListener('change', function (e) { send('setMcp', { enabled: e.target.checked }); });
+  $('mcpCopy').addEventListener('click', function () {
+    var box = $('mcpCommand');
+    box.select();
+    try { document.execCommand('copy'); } catch (e) { /* (selected: Ctrl+C works too) */ }
+  });
+  $('mcpToken').addEventListener('click', function () { send('setMcp', { newToken: true }); });
   $('guess').addEventListener('change', function (e) { settings({ guess: e.target.checked }); });
   $('height').addEventListener('change', function (e) {
     var v = Math.max(100, Math.min(8000, Math.round(parseFloat(e.target.value) || 0)));
@@ -454,32 +466,41 @@
         var cropped = window.BBAnnot.cropCanvas(imgs[i], v.crop);      // (padding past the image filled)
         return { cropped: cropped, w: Math.max(1, Math.round(cropped.width * H / cropped.height)) };
       });
-      var total = gap * (views.length - 1);
-      dims.forEach(function (d) { total += d.w; });
-      var k = total > 16000 ? 16000 / total : 1;
+      // Rows (job.rows: lists of view indexes, so a wide image wraps; default one row), each centred.
+      var rows = (job.rows && job.rows.length) ? job.rows : [views.map(function (v, i) { return i; })];
+      function rowWidth(row) {
+        var w = gap * (row.length - 1);
+        row.forEach(function (i) { w += dims[i].w; });
+        return w;
+      }
+      var widest = Math.max.apply(null, rows.map(rowWidth));
+      var k = widest > 16000 ? 16000 / widest : 1;
       var HH = Math.max(1, Math.round(H * k));
       if (k < 1) {
-        gap = Math.round(gap * k); total = gap * (views.length - 1);
-        dims.forEach(function (d) { d.w = Math.max(1, Math.round(d.w * k)); total += d.w; });
+        gap = Math.round(gap * k);
+        dims.forEach(function (d) { d.w = Math.max(1, Math.round(d.w * k)); });
+        widest = Math.max.apply(null, rows.map(rowWidth));
       }
       var out = document.createElement('canvas');
-      out.width = total; out.height = HH;
+      out.width = widest; out.height = rows.length * HH + gap * (rows.length - 1);
       var octx = out.getContext('2d');
       octx.fillStyle = '#ffffff';
-      octx.fillRect(0, 0, total, HH);
-      var x = 0;
-      views.forEach(function (v, i) {
-        var d = dims[i];
-        var c = document.createElement('canvas');
-        c.width = d.w; c.height = HH;
-        var ctx = c.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, d.w, HH);
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(d.cropped, 0, 0, d.cropped.width, d.cropped.height, 0, 0, d.w, HH);
-        if (v.annotations && v.annotations.length) window.BBAnnot.draw(ctx, v.annotations, d.w, HH);
-        octx.drawImage(c, x, 0);
-        x += d.w + gap;
+      octx.fillRect(0, 0, out.width, out.height);
+      rows.forEach(function (row, r) {
+        var x = Math.round((widest - rowWidth(row)) / 2), y = r * (HH + gap);
+        row.forEach(function (i) {
+          var v = views[i], d = dims[i];
+          var c = document.createElement('canvas');
+          c.width = d.w; c.height = HH;
+          var ctx = c.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, d.w, HH);
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(d.cropped, 0, 0, d.cropped.width, d.cropped.height, 0, 0, d.w, HH);
+          if (v.annotations && v.annotations.length) window.BBAnnot.draw(ctx, v.annotations, d.w, HH);
+          octx.drawImage(c, x, y);
+          x += d.w + gap;
+        });
       });
       return out;
     }).then(function (canvas) {

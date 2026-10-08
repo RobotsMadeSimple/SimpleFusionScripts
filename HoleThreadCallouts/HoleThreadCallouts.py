@@ -24,7 +24,7 @@ import uuid
 import adsk.core
 import adsk.fusion
 
-from .lib import callouts, clipboard, holes as holes_mod, log
+from .lib import callouts, clipboard, holes as holes_mod, log, mcp_server
 
 PALETTE_ID = "holeThreadCalloutsPalette"
 PALETTE_NAME = "Hole & Thread Callouts"
@@ -40,6 +40,7 @@ STYLES = {"thread": "WireframeWithVisibleEdgesOnlyVisualStyle", "shaded": "Shade
 _handlers = []
 _events = []          # (event, handler) pairs, for reload_addin
 _ctrl = None
+_mcp = None           # agent access (lib/mcp_server.py), when switched on in the panel
 
 
 def default_data():
@@ -108,6 +109,9 @@ class Controller:
         self._queue = []                # export every configuration: [(row id, path, name)] still to do
         self._written = None
         self._return_config = None
+        self.target = None              # an occurrence an agent (lib/mcp_tools.py) works on; None = the activated one
+        self.mcp_export = None          # an agent's export waiting for the panel's stitched image (mcp_server.Deferred)
+        self._pending_stitch = None     # a stitch job waiting for the panel to load
 
     # ------------------------------------------------------------ data
 
@@ -136,7 +140,7 @@ class Controller:
 
     def part_key(self):
         """Views are per component, and per configuration in a configured design."""
-        comp, _ = holes_mod.context(self.design())
+        comp, _ = holes_mod.context(self.design(), self.target)
         key = _safe(lambda: comp.id, "") or comp.name
         row = self.active_config()
         return key + ("@" + row.id if row is not None else "")
@@ -202,14 +206,16 @@ class Controller:
         """The part's holes; re-found only when the model (timeline), the marks or the guess setting change."""
         design = self.design()
         timeline = _safe(lambda: (design.timeline.count, design.timeline.markerPosition), None)
-        bodies = holes_mod.bodies(design)
-        key = json.dumps([self.part_key(), timeline, [_safe(lambda: b.faces.count, 0) for b in bodies],
+        bodies = holes_mod.bodies(design, self.target)
+        _, occ = holes_mod.context(design, self.target)
+        place = _safe(lambda: occ.fullPathName, "") if occ is not None else ""    # (each occurrence: its own spot)
+        key = json.dumps([self.part_key(), place, timeline, [_safe(lambda: b.faces.count, 0) for b in bodies],
                           [_safe(lambda: b.revisionId, "") for b in bodies],
                           data["settings"].get("guess", True), part["marks"]], sort_keys=True)
         if self._holes_cache and self._holes_cache[0] == key:
             return self._holes_cache[1]
         with log.timed("find holes"):
-            found = holes_mod.find(design, data["settings"].get("guess", True), part["marks"])
+            found = holes_mod.find(design, data["settings"].get("guess", True), part["marks"], self.target)
         self._holes_cache = (key, found)
         return found
 
@@ -217,18 +223,76 @@ class Controller:
         """{view id: projection} for every thread view, and the hole -> view assignment.
         Moves the camera through the views (the caller puts it back)."""
         design, viewport = self.design(), self.app.activeViewport
-        bodies = holes_mod.bodies(design)
+        bodies = holes_mod.bodies(design, self.target)
         projections = {}
         for view in self.ordered(part):
             apply_camera(viewport, view.get("camera"))
             viewport.refresh()
             _pump()
+            if holes_mod.fit_inside(viewport, bodies):          # (part ran off the window: zoomed out)
+                _pump()
+                view["camera"] = camera_to_dict(viewport.camera)
             with log.timed("project " + view["id"]):
                 projections[view["id"]] = holes_mod.project(design, viewport, found if view["kind"] == "thread" else [],
                                                              bodies, view.get("padding"))
         order = [v["id"] for v in self.ordered(part) if v["kind"] == "thread"]
         visible = {vid: {h["id"] for h in projections[vid]["holes"]} for vid in order}
         return projections, callouts.assign(order, visible, part.get("pinned"))
+
+    def _aspect(self, projection):
+        """A view's width / height on the exported image."""
+        viewport = self.app.activeViewport
+        crop = projection["crop"]
+        return crop[2] * viewport.width / max(1e-6, crop[3] * viewport.height)
+
+    def _label_room(self, data, part, found, projections, assigned):
+        """Size the labels for the whole image (callouts.label_scale, its views in rows) and make room
+        beside the part for them in each thread view whose padding wasn't set by hand: each label's
+        side is the one nearer its holes, and only those sides get room (callouts.side_room); the
+        view's projection is redone with it. Returns (scale, {view id: {(kind, label): side}})."""
+        design, viewport = self.design(), self.app.activeViewport
+        bodies = holes_mod.bodies(design, self.target)
+        gap = self._gap(data)
+        views = self.ordered(part)
+        bare = {v["id"]: projections[v["id"]] for v in views}                      # (the part alone)
+        sides = {}
+        for view in views:
+            if view["kind"] != "thread" or view.get("padding"):
+                continue
+            groups = {}
+            for h in bare[view["id"]]["holes"]:
+                if assigned.get(h["id"]) == view["id"]:
+                    groups.setdefault((h["kind"], h["label"]), []).append(h["center"][0])
+            sides[view["id"]] = {key: (callouts.label_side(xs), len(xs)) for key, xs in groups.items()}
+        scale = callouts.label_scale([self._aspect(bare[v["id"]]) for v in views], gap)
+        for _ in range(3):                  # (more room -> a wider image -> bigger labels -> more room)
+            for view in views:
+                labels = [("{}x {}{}".format(n, label, " dowel" if kind == "dowel" else ""), side)
+                          for (kind, label), (side, n) in sides.get(view["id"], {}).items()]
+                if not labels:
+                    continue
+                room = callouts.side_room(labels, scale, self._aspect(bare[view["id"]]))
+                apply_camera(viewport, view.get("camera"))
+                viewport.refresh()
+                _pump()
+                projections[view["id"]] = holes_mod.project(design, viewport, found, bodies, room)
+            scale = callouts.label_scale([self._aspect(projections[v["id"]]) for v in views], gap)
+        return scale, {vid: {key: side for key, (side, _) in groups.items()} for vid, groups in sides.items()}
+
+    @staticmethod
+    def _gap(data):
+        """The gap between views, as a fraction of the image height."""
+        return float(data["settings"].get("gap", 24)) / max(1.0, float(data["settings"].get("height", 900)))
+
+    def stitch_job(self, data, rendered, height=None):
+        """What the panel stitches: the views (in rows that keep the image page-shaped, callouts.rows),
+        the image height of each row and the gap."""
+        aspects = [r["aspect"] for r in rendered]
+        return {"views": [{"kind": r["view"]["kind"], "image": r["image"], "crop": r["crop"],
+                           "annotations": r["annotations"]} for r in rendered],
+                "rows": callouts.rows(aspects, self._gap(data)),
+                "height": int(height or data["settings"].get("height", 900)),
+                "gap": int(data["settings"].get("gap", 24))}
 
     def _capture(self, data, view, projection):
         """PNG bytes of the view (camera already set): the viewport re-rendered so the part's
@@ -257,7 +321,7 @@ class Controller:
                     pass
 
     def render(self, view_ids=None):
-        """[{view, image (data URL), crop, annotations}] for the views (all, in order, by default).
+        """[{view, image (data URL), crop, annotations, aspect}] for the views (all, in order, by default).
         The camera and visual style are put back afterwards."""
         data = self.load()
         part = self.part(data)
@@ -269,6 +333,7 @@ class Controller:
         try:
             found = self._find_holes(data, part)
             projections, assigned = self._layout(data, part, found)
+            scale, sides = self._label_room(data, part, found, projections, assigned)
             for view in self.ordered(part):
                 if view_ids is not None and view["id"] not in view_ids:
                     continue
@@ -281,10 +346,12 @@ class Controller:
                     view["crop"] = projection["crop"]
                     remapped = True
                 annotations = callouts.build(view, projection["holes"], assigned, view.get("annotations"),
-                                             data["settings"].get("colors"))
+                                             data["settings"].get("colors"), self._aspect(projection), scale,
+                                             sides.get(view["id"]))
                 png = self._capture(data, view, projection)
                 out.append({"view": view, "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
-                            "crop": projection["crop"], "annotations": annotations})
+                            "crop": projection["crop"], "annotations": annotations,
+                            "aspect": self._aspect(projection)})
         finally:
             viewport.visualStyle = style
             apply_camera(viewport, camera)
@@ -300,7 +367,7 @@ class Controller:
             return {"error": "Open a Fusion design to use Hole & Thread Callouts."}
         data = self.load()
         part = self.part(data)
-        comp, _ = holes_mod.context(design)
+        comp, _ = holes_mod.context(design, self.target)
         try:
             found = self._find_holes(data, part)
         except Exception:
@@ -333,12 +400,13 @@ class Controller:
             "settings": data["settings"],
             "palette": callouts.OKABE_ITO,
             "notice": self._notice,
+            "mcp": _mcp_status(),
         }
 
     def _config_tabs(self, data):
         """[{id, name, active, views}] for the panel's tabs (empty unless a configured design)."""
         active = self.active_config()
-        comp, _ = holes_mod.context(self.design())
+        comp, _ = holes_mod.context(self.design(), self.target)
         base = _safe(lambda: comp.id, "") or comp.name
         out = []
         for row_id, name in self.configs():
@@ -400,6 +468,9 @@ class Controller:
 
         if action in ("ready", "refresh"):
             changed = False
+            if action == "ready" and self._pending_stitch is not None:
+                job, self._pending_stitch = self._pending_stitch, None
+                self.ui.palettes.itemById(PALETTE_ID).sendInfoToHTML("stitch", json.dumps(job))
         elif action == "style":
             set_style(viewport, data_in.get("kind"))
             changed = False
@@ -438,7 +509,7 @@ class Controller:
             changed = False
         elif action == "copyViews":
             # Start this configuration from another's views (cameras, padding, callouts).
-            comp, _ = holes_mod.context(self.design())
+            comp, _ = holes_mod.context(self.design(), self.target)
             source = data["parts"].get((_safe(lambda: comp.id, "") or comp.name) + "@" + str(data_in.get("from")), {})
             copied = json.loads(json.dumps(source.get("views", [])))
             for v in copied:
@@ -482,6 +553,17 @@ class Controller:
                     data["settings"][key] = data_in[key]
             if "colors" in data_in:
                 data["settings"]["colors"] = dict(data["settings"].get("colors", {}), **data_in["colors"])
+        elif action == "setMcp":
+            config = mcp_server.settings()
+            if "enabled" in data_in:
+                config["enabled"] = bool(data_in["enabled"])
+            if data_in.get("newToken"):
+                import secrets
+                config["token"] = secrets.token_urlsafe(18)
+            mcp_server.save(config)
+            _mcp_apply()
+            log.info("mcp: " + ("on" if config["enabled"] else "off"))
+            changed = False
         elif action == "export":
             self.save(data)
             self.export()
@@ -612,9 +694,7 @@ class Controller:
             return False
         finally:
             progress.hide()
-        job = {"views": [{"kind": r["view"]["kind"], "image": r["image"], "crop": r["crop"],
-                          "annotations": r["annotations"]} for r in rendered],
-               "height": int(data["settings"].get("height", 900)), "gap": int(data["settings"].get("gap", 24))}
+        job = self.stitch_job(data, rendered)
         palette = self.ui.palettes.itemById(PALETTE_ID)
         palette.sendInfoToHTML("stitch", json.dumps(job))     # the panel draws and stitches, then sends "stitched"
         return True
@@ -623,7 +703,7 @@ class Controller:
         """Every configuration with thread views: one image each, "<design> - <configuration> threads.png"
         in a folder you pick. The configuration you were in is active again at the end."""
         data = self.load()
-        comp, _ = holes_mod.context(self.design())
+        comp, _ = holes_mod.context(self.design(), self.target)
         base = _safe(lambda: comp.id, "") or comp.name
         todo = [(rid, name) for rid, name in self.configs()
                 if [v for v in data["parts"].get(base + "@" + rid, {}).get("views", []) if v.get("kind") == "thread"]]
@@ -670,7 +750,53 @@ class Controller:
             self._written = None
         self.push_state()
 
+    def show_palette(self):
+        """The panel, shown (created if needed). Returns (palette, created): a new panel's page is
+        still loading, and says "ready" when it can take messages."""
+        palette = self.ui.palettes.itemById(PALETTE_ID)
+        created = not palette
+        if created:
+            url = (pathlib.Path(os.path.abspath(__file__)).parent / "palette" / "index.html").as_uri()
+            palette = self.ui.palettes.add(PALETTE_ID, PALETTE_NAME, url, True, True, True, 360, 700)
+            _add(palette.incomingFromHTML, PaletteHTMLHandler())
+            _add(palette.closed, PaletteClosedHandler())
+        palette.isVisible = True
+        if created:
+            _place_palette(self.ui, palette)
+        return palette, created
+
+    def stitch_for_agent(self, job, path, deferred):
+        """An agent's export (lib/mcp_tools.py): the panel stitches `job`, write_export saves it to
+        `path` and answers the agent through `deferred`."""
+        self._export_path = path
+        self._written = None
+        self._queue = []
+        self.mcp_export = deferred
+        palette, created = self.show_palette()
+        if created:
+            self._pending_stitch = job          # sent when the panel says "ready"
+        else:
+            palette.sendInfoToHTML("stitch", json.dumps(job))
+
+    def _agent_export(self, data_in):
+        deferred, path = self.mcp_export, self._export_path
+        self.mcp_export = None
+        self._export_path = None
+        try:
+            png = base64.b64decode((data_in.get("png") or "").split(",", 1)[-1])
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(png)
+            log.info("agent export {} ({:.1f} MB)".format(path, len(png) / 1e6))
+            deferred.resolve(png, path)
+        except Exception as err:
+            log.error("agent export")
+            deferred.fail("Couldn't save the image: {}".format(err))
+
     def write_export(self, data_in):
+        if self.mcp_export is not None:
+            self._agent_export(data_in)
+            return
         path = self._export_path
         if not path:
             return
@@ -777,17 +903,7 @@ class EditorHTMLHandler(adsk.core.HTMLEventHandler):
 class ShowPaletteHandler(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
         try:
-            ui = _ctrl.ui
-            palette = ui.palettes.itemById(PALETTE_ID)
-            new = not palette
-            if new:
-                url = (pathlib.Path(os.path.abspath(__file__)).parent / "palette" / "index.html").as_uri()
-                palette = ui.palettes.add(PALETTE_ID, PALETTE_NAME, url, True, True, True, 360, 700)
-                _add(palette.incomingFromHTML, PaletteHTMLHandler())
-                _add(palette.closed, PaletteClosedHandler())
-            palette.isVisible = True
-            if new:
-                _place_palette(ui, palette)
+            _ctrl.show_palette()
             _ctrl.push_state()
         except Exception:
             log.error("show palette")
@@ -825,6 +941,50 @@ class CommandTerminatedHandler(adsk.core.ApplicationCommandEventHandler):
                 _ctrl.push_state()
         except Exception:
             log.error("command terminated")
+
+
+def _mcp_apply():
+    """Start / stop agent access to match its setting (off unless switched on in the panel)."""
+    global _mcp
+    app = adsk.core.Application.get()
+    config = mcp_server.settings()
+    if not config["enabled"]:
+        if _mcp is not None:
+            _mcp.stop()
+        return
+    if _mcp is None:
+        try:
+            app.unregisterCustomEvent(mcp_server.EVENT)
+        except Exception:
+            pass
+        _add(app.registerCustomEvent(mcp_server.EVENT), McpCallHandler())
+        _mcp = mcp_server.Server(lambda: adsk.core.Application.get().fireCustomEvent(mcp_server.EVENT, ""))
+    _mcp.start(config)
+
+
+def _mcp_status():
+    config = mcp_server.settings()
+    return {"enabled": config["enabled"], "port": config["port"], "url": mcp_server.url(config),
+            "running": bool(_mcp is not None and _mcp.running), "error": _mcp.error if _mcp is not None else ""}
+
+
+class McpCallHandler(adsk.core.CustomEventHandler):
+    """An agent's tool calls, on Fusion's main thread."""
+
+    def notify(self, args):
+        try:
+            import sys
+            from .lib import mcp_tools
+            mcp_tools.MAIN[0] = sys.modules[__name__]
+
+            def runner(name, arguments):
+                if name == "__list__":
+                    return mcp_tools.definitions()
+                return mcp_tools.run(_ctrl, name, arguments)
+            if _mcp is not None:
+                _mcp.run_pending(runner)
+        except Exception:
+            log.error("mcp call")
 
 
 def reload_addin():
@@ -921,14 +1081,23 @@ def run(context):
         except Exception:
             pass
         _add(app.registerCustomEvent(RELOAD_EVENT), ReloadHandler())
+        _mcp_apply()
     except Exception:
         log.error("run")
         ui.messageBox("Hole & Thread Callouts failed to start:\n{}".format(traceback.format_exc()))
 
 
 def stop(context):
+    global _mcp
     if not _mine():
         return
+    if _mcp is not None:
+        _mcp.stop()
+        _mcp = None
+        try:
+            adsk.core.Application.get().unregisterCustomEvent(mcp_server.EVENT)
+        except Exception:
+            pass
     _release()                  # (a reload claims it again in run)
     app = adsk.core.Application.get()
     ui = app.userInterface
