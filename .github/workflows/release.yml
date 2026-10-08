@@ -7,6 +7,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths: ["install/SimpleFusionScripts.iss", ".github/workflows/release.yml"]
   workflow_dispatch:
     inputs:
       tag:
@@ -18,6 +20,8 @@ permissions:
 
 jobs:
   zips:
+    # (a push to main that only touches the installer just checks the .exe builds: no release)
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,3 +45,40 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           gh release create "$TAG" dist/* --title "$TAG" --generate-notes --target "$GITHUB_SHA"
+
+  # The Windows installer (.exe): Inno Setup, installs for the current user without admin rights.
+  installer:
+    runs-on: windows-latest
+    needs: zips
+    if: always() && (needs.zips.result == 'success' || needs.zips.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $version = if ($tag -like "v*") { $tag.Substring(1) } else { "test" }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" install\SimpleFusionScripts.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - name: Keep it with the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/*.exe
+
+      - name: Attach it to the release
+        if: needs.zips.result == 'success'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          gh release upload $tag (Get-ChildItem dist\*.exe).FullName --clobber

@@ -10,8 +10,17 @@ Autodesk Fusion add-ins and scripts from Robots Made Simple.
 
 ## Installing
 
-Fusion loads every add-in in its add-ins folder on startup, so installing is just putting
-them there. The installer does it for you and lets you pick which add-ins to install.
+**New to this? Follow the step-by-step [install guide](INSTALL.md)** (no Git or PowerShell needed).
+
+**Windows, the easy way:** download **`SimpleFusionScripts-Setup-<version>.exe`** from the
+[latest release](https://github.com/RobotsMadeSimple/SimpleFusionScripts/releases/latest), run it,
+pick the add-ins and restart Fusion. It installs for your account only (no admin rights) and can be
+uninstalled from Windows' Installed apps. Windows may warn that it's from an unknown publisher:
+**More info → Run anyway**.
+
+**With Git** (to follow the latest changes): Fusion loads every add-in in its add-ins folder on
+startup, so installing is just putting them there. The scripts below do it for you and let you pick
+which add-ins to install.
 
 **Windows** (PowerShell; needs [Git](https://git-scm.com)):
 
@@ -41,7 +50,9 @@ them into Fusion's add-ins folder yourself:
 Manually, from Fusion: **Utilities → Scripts and Add-Ins → Add-Ins → +**, choose an add-in's
 folder (e.g. `BuildBook/`), then **Run** (tick **Run on Startup**).
 
-New releases (one zip per add-in) are built by GitHub Actions when a version tag is pushed:
+New releases (one zip per add-in, plus the Windows installer built from
+[`install/SimpleFusionScripts.iss`](install/SimpleFusionScripts.iss) with Inno Setup) are built by
+GitHub Actions when a version tag is pushed:
 `git tag v1.1 && git push origin v1.1`.
 
 Each add-in's folder has its own README.
