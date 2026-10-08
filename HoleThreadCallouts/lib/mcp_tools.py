@@ -9,7 +9,6 @@ for that component (kept in the design). While a tool looks at a part, only that
 import base64
 import json
 import math
-import re
 import threading
 import uuid
 from contextlib import contextmanager
@@ -47,12 +46,14 @@ TOOLS = [
     _tool("list_views", "A part's views (thread views in export order, then the shaded view).",
           {"part": PART}, ["part"]),
     _tool("auto_views", "Set up thread views that between them show every threaded hole: flat (orthographic) "
-          "views straight at the part's faces, fewest first, so each face the holes open on gets its own. Keeps "
-          "the part's existing views unless replace is true.",
+          "views straight at the part's faces, fewest first, so each face the holes open on gets its own (a through hole: the "
+          "face it's tapped from), then a shaded iso view of the whole part on the right. Keeps the part's "
+          "existing views unless replace is true.",
           {"part": PART, "bodies": BODIES,
            "replace": {"type": "boolean", "description": "Replace the part's existing views (default false)"},
            "iso": {"type": "boolean", "description": "Also consider isometric views (default false: flat only)"},
-           "shaded": {"type": "boolean", "description": "Add a shaded iso view at the end (default false)"}},
+           "shaded": {"type": "boolean", "description": "End with a shaded iso view of the whole part, so readers "
+                                                       "see which part and face it is (default true)"}},
           ["part"]),
     _tool("add_view", "Add a view of the part from a standard direction (fitted to the part).",
           {"part": PART, "bodies": BODIES, "view": {"type": "string", "enum": VIEWS},
@@ -70,8 +71,8 @@ TOOLS = [
           "(auto_views: flat views) if the part has none, or anew with replace_views. Returns the picture and the "
           "file's path.",
           {"part": PART, "bodies": BODIES,
-           "replace_views": {"type": "boolean", "description": "Set up the views anew first (flat views, no shaded "
-                                                               "view)"},
+           "replace_views": {"type": "boolean", "description": "Set up the views anew first (flat views, then a "
+                                                               "shaded iso view on the right)"},
            "path": {"type": "string", "description": "Where to save the PNG (default: the add-in's data folder, "
                                                      "exports/<design> - <part> threads.png)"},
            "height": {"type": "integer", "minimum": 100, "maximum": 4000,
@@ -128,23 +129,37 @@ def _on(ctrl, path):
         ctrl.target = before
 
 
+FOLDERS = ("isSketchFolderLightBulbOn", "isConstructionFolderLightBulbOn", "isJointsFolderLightBulbOn",
+           "isOriginFolderLightBulbOn")          # (sketch lines, planes and joints would draw over the part)
+
+
 @contextmanager
 def _isolated(ctrl, occ, body_names=None):
-    """Only `occ` (and only `body_names` of its bodies) shown; visibility put back afterwards."""
-    root = ctrl.design().rootComponent
-    saved = []
+    """Only `occ` (and only `body_names` of its bodies) shown, no sketches, construction geometry or
+    joints; everything's visibility put back afterwards."""
+    design = ctrl.design()
+    root = design.rootComponent
+    saved = []                                  # (entity, attribute, value before)
     target = occ.fullPathName if occ is not None else None
 
     def keep(path):
         return target is None or path == target or target.startswith(path + "+") or path.startswith(target + "+")
+
+    def turn(entity, attr, on):
+        try:
+            saved.append((entity, attr, getattr(entity, attr)))
+            setattr(entity, attr, on)
+        except Exception:
+            pass
     try:
         if target is not None:
             for body in root.bRepBodies:
-                saved.append((body, body.isLightBulbOn))
-                body.isLightBulbOn = False
+                turn(body, "isLightBulbOn", False)
         for o in root.allOccurrences:
-            saved.append((o, o.isLightBulbOn))
-            o.isLightBulbOn = keep(o.fullPathName)
+            turn(o, "isLightBulbOn", keep(o.fullPathName))
+        for comp in design.allComponents:
+            for attr in FOLDERS:
+                turn(comp, attr, False)
         if body_names:
             names = set(body_names)
             mine = list(occ.bRepBodies) if occ is not None else list(root.bRepBodies)
@@ -152,14 +167,13 @@ def _isolated(ctrl, occ, body_names=None):
             if missing:
                 raise ValueError("No bodies called {} in that part".format(", ".join(sorted(missing))))
             for body in mine:
-                saved.append((body, body.isLightBulbOn))
-                body.isLightBulbOn = body.name in names
+                turn(body, "isLightBulbOn", body.name in names)
         _settle(ctrl)
         yield
     finally:
-        for entity, on in reversed(saved):
+        for entity, attr, value in reversed(saved):
             try:
-                entity.isLightBulbOn = on
+                setattr(entity, attr, value)
             except Exception:
                 pass
         ctrl.app.activeViewport.refresh()
@@ -249,7 +263,7 @@ def _list_parts(ctrl, args):
     return _text(list(rows.values()))
 
 
-SCREW = re.compile(r"(?i)screw|shcs|bhcs|fhcs|bolt|cap head|\bM\d+(\.\d+)?\s*x\s*\d")
+SCREW = holes_mod.SCREW
 
 
 def _face_name(outward):
@@ -322,7 +336,7 @@ def _get_holes(ctrl, args):
     for h in found:
         row = {"id": h["id"], "kind": h["kind"], "size": h["label"], "source": h["source"],
                "diameter_mm": h["diameter"], "depth_mm": round(h.get("length", 0) * 10.0, 1),
-               "opens_on": [_face_name(o) for _, o in h["openings"]],
+               "opens_on": [_face_name(o) for _, o in h["openings"]], "tapped_from": h.get("tapped_from"),
                "at_mm": [round(v * 10.0, 1) for v in h["openings"][0][0]] if h["openings"] else None}
         # The screws threading into this hole: their engaged spot is on the hole's axis, on this hole's
         # side of the part (a hole tapped from both ends: the nearer end).
@@ -366,7 +380,7 @@ def _new_view(kind, camera):
     return {"id": uuid.uuid4().hex[:8], "kind": kind, "camera": camera, "annotations": []}
 
 
-def _auto(ctrl, occ, replace=False, shaded=False, iso=False):
+def _auto(ctrl, occ, replace=False, shaded=True, iso=False):
     """Pick views that show every hole (greedy, isometric views first); returns (added, uncovered)."""
     viewport = ctrl.app.activeViewport
     camera, style = _camera_dict(ctrl), viewport.visualStyle
@@ -412,7 +426,7 @@ def _auto(ctrl, occ, replace=False, shaded=False, iso=False):
 
 def _auto_views(ctrl, args):
     with _on(ctrl, args.get("part")) as occ, _isolated(ctrl, occ, args.get("bodies")):
-        added, uncovered = _auto(ctrl, occ, bool(args.get("replace")), bool(args.get("shaded")),
+        added, uncovered = _auto(ctrl, occ, bool(args.get("replace")), args.get("shaded", True) is not False,
                                  bool(args.get("iso")))
     ctrl.push_state()
     out = {"added": added}
@@ -481,10 +495,7 @@ def _export_image(ctrl, args):
         rendered = ctrl.render()
         found = _found(ctrl)
         comp_name = occ.component.name if occ is not None else ctrl.design().rootComponent.name
-    height = int(args.get("height") or data["settings"].get("height", 900))
-    job = {"views": [{"kind": r["view"]["kind"], "image": r["image"], "crop": r["crop"],
-                      "annotations": r["annotations"]} for r in rendered],
-           "height": height, "gap": int(data["settings"].get("gap", 24))}
+    job = ctrl.stitch_job(data, rendered, args.get("height"))
     path = args.get("path")
     if not path:
         doc = ctrl.app.activeDocument

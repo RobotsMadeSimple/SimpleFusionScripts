@@ -466,32 +466,41 @@
         var cropped = window.BBAnnot.cropCanvas(imgs[i], v.crop);      // (padding past the image filled)
         return { cropped: cropped, w: Math.max(1, Math.round(cropped.width * H / cropped.height)) };
       });
-      var total = gap * (views.length - 1);
-      dims.forEach(function (d) { total += d.w; });
-      var k = total > 16000 ? 16000 / total : 1;
+      // Rows (job.rows: lists of view indexes, so a wide image wraps; default one row), each centred.
+      var rows = (job.rows && job.rows.length) ? job.rows : [views.map(function (v, i) { return i; })];
+      function rowWidth(row) {
+        var w = gap * (row.length - 1);
+        row.forEach(function (i) { w += dims[i].w; });
+        return w;
+      }
+      var widest = Math.max.apply(null, rows.map(rowWidth));
+      var k = widest > 16000 ? 16000 / widest : 1;
       var HH = Math.max(1, Math.round(H * k));
       if (k < 1) {
-        gap = Math.round(gap * k); total = gap * (views.length - 1);
-        dims.forEach(function (d) { d.w = Math.max(1, Math.round(d.w * k)); total += d.w; });
+        gap = Math.round(gap * k);
+        dims.forEach(function (d) { d.w = Math.max(1, Math.round(d.w * k)); });
+        widest = Math.max.apply(null, rows.map(rowWidth));
       }
       var out = document.createElement('canvas');
-      out.width = total; out.height = HH;
+      out.width = widest; out.height = rows.length * HH + gap * (rows.length - 1);
       var octx = out.getContext('2d');
       octx.fillStyle = '#ffffff';
-      octx.fillRect(0, 0, total, HH);
-      var x = 0;
-      views.forEach(function (v, i) {
-        var d = dims[i];
-        var c = document.createElement('canvas');
-        c.width = d.w; c.height = HH;
-        var ctx = c.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, d.w, HH);
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(d.cropped, 0, 0, d.cropped.width, d.cropped.height, 0, 0, d.w, HH);
-        if (v.annotations && v.annotations.length) window.BBAnnot.draw(ctx, v.annotations, d.w, HH);
-        octx.drawImage(c, x, 0);
-        x += d.w + gap;
+      octx.fillRect(0, 0, out.width, out.height);
+      rows.forEach(function (row, r) {
+        var x = Math.round((widest - rowWidth(row)) / 2), y = r * (HH + gap);
+        row.forEach(function (i) {
+          var v = views[i], d = dims[i];
+          var c = document.createElement('canvas');
+          c.width = d.w; c.height = HH;
+          var ctx = c.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, d.w, HH);
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(d.cropped, 0, 0, d.cropped.width, d.cropped.height, 0, 0, d.w, HH);
+          if (v.annotations && v.annotations.length) window.BBAnnot.draw(ctx, v.annotations, d.w, HH);
+          octx.drawImage(c, x, y);
+          x += d.w + gap;
+        });
       });
       return out;
     }).then(function (canvas) {

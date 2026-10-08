@@ -12,6 +12,7 @@ bottom); each knows which way is out.
 """
 
 import math
+import re
 
 import adsk.core
 import adsk.fusion
@@ -19,6 +20,8 @@ import adsk.fusion
 from . import callouts, log
 
 EPS = 0.02          # cm: step off an opening to test which side is air
+SCREW = re.compile(r"(?i)screw|shcs|bhcs|fhcs|bolt|cap head|\bM\d+(\.\d+)?\s*x\s*\d")    # screw-like part names
+CLEAR = (0.1, 0.3, 0.6, 1.0, 1.5)  # cm out from an opening: another part there blocks a screw going in
 OUTLINE_POINTS = 28
 
 
@@ -176,7 +179,8 @@ def _merge(faces):
             tagged = next((g for g in run if g.get("label")), {})
             out.append({"id": first["key"], "members": [g["key"] for g in run], "radius": first["radius"],
                         "axis": first["axis"], "openings": ends, "length": t1 - t0,
-                        "label": tagged.get("label"), "source": tagged.get("source")})
+                        "label": tagged.get("label"), "source": tagged.get("source"),
+                        "start": next((g["start"] for g in run if g.get("start")), None)})
     return out
 
 
@@ -198,7 +202,7 @@ def find(design, guess=True, marks=None, target=None):
             if geo is not None and geo["key"] not in faces:
                 faces[geo["key"]] = geo
 
-    def tag(feature_faces, label, source):
+    def tag(feature_faces, label, source, start=None):
         for face in feature_faces:
             try:
                 geo = _hole_geometry(_proxy(face, occ))
@@ -207,6 +211,8 @@ def find(design, guess=True, marks=None, target=None):
             if geo is not None and geo["key"] in faces:
                 faces[geo["key"]].setdefault("label", label)
                 faces[geo["key"]].setdefault("source", source)
+                if start is not None:
+                    faces[geo["key"]].setdefault("start", start)
 
     features = comp.features
     for thread in _safe(lambda: features.threadFeatures, []) or []:
@@ -222,9 +228,10 @@ def find(design, guess=True, marks=None, target=None):
             continue
         info = _safe(lambda: hole_feature.tappedHoleInfo)
         label = callouts.size_label(_safe(lambda: info.threadDesignation, "") if info else "")
-        tag(_safe(lambda: list(hole_feature.sideFaces), []) or [], label, "tapped")
+        tag(_safe(lambda: list(hole_feature.sideFaces), []) or [], label, "tapped", _start(hole_feature, occ))
 
     out = []
+    others = None
     for h in _merge(faces):
         diameter = round(h["radius"] * 20.0, 3)          # cm radius -> mm diameter
         mark = next((marks[k] for k in [h["id"]] + h["members"] if k in marks), None)
@@ -245,11 +252,83 @@ def find(design, guess=True, marks=None, target=None):
                 "radius": h["radius"], "axis": h["axis"], "openings": h["openings"], "length": h["length"]}
         if kind == "thread" and len(h["openings"]) == 2 and h["length"] * 10.0 >= BOTH_ENDS * diameter:
             for n, opening in enumerate(h["openings"], 1):
-                out.append(dict(hole, id="{}|{}".format(h["id"], n), openings=[opening]))
-        else:
-            out.append(hole)
+                out.append(dict(hole, id="{}|{}".format(h["id"], n), openings=[opening], tapped_from="both ends"))
+            continue
+        if kind == "thread" and len(h["openings"]) == 2:
+            if others is None:
+                others = _others(design, occ)
+            end, why = _tap_end(h, others)
+            if end is not None:
+                hole = dict(hole, openings=[h["openings"][end]], tapped_from=why)
+        out.append(hole)
     out.sort(key=lambda h: (h["kind"], callouts.size_key(h["label"]), h["id"]))
     return out
+
+
+def _start(hole_feature, occ):
+    """Where a hole feature starts (world coordinates), or None."""
+    p = _safe(lambda: hole_feature.position)
+    if p is None:
+        return None
+    p = p.copy()
+    if occ is not None:
+        p.transformBy(occ.transform2)
+    return _v(p)
+
+
+def _others(design, occ):
+    """[(name, is a screw, [bodies], (lo, hi) box)] of the assembly's other parts (shown or not)."""
+    target = occ.fullPathName if occ is not None else None
+    out = []
+    for o in design.rootComponent.allOccurrences:
+        path = o.fullPathName
+        if target and (path == target or path.startswith(target + "+") or target.startswith(path + "+")):
+            continue
+        bodies = [b for b in o.bRepBodies if _safe(lambda: b.isSolid, True)]
+        if not bodies:
+            continue
+        box = o.boundingBox
+        out.append((path, bool(SCREW.search(o.component.name)), bodies, (_v(box.minPoint), _v(box.maxPoint))))
+    return out
+
+
+def _in_box(p, box, pad=0.0):
+    return all(box[0][i] - pad <= p[i] <= box[1][i] + pad for i in range(3))
+
+
+def _tap_end(hole, others):
+    """Which opening (0 / 1) a through hole is tapped from, and why -- the end a screw goes in from:
+    1. a screw in the hole: the end its head is at;
+    2. another part right outside one end (a screw can't go in there): the other end;
+    3. the end the hole feature was started from.
+    (None, "") when nothing tells."""
+    (c1, o1), (c2, o2) = hole["openings"]
+    mid = tuple((a + b) / 2.0 for a, b in zip(c1, c2))
+    axis_points = [tuple(c1[i] + (c2[i] - c1[i]) * k / 4.0 for i in range(3)) for k in range(1, 4)]
+    for name, screw, bodies, box in others:
+        if screw and any(_in_box(p, box, 0.02) for p in axis_points):     # (a short screw: part of it)
+            centre = tuple((a + b) / 2.0 for a, b in zip(*box))
+            return (0 if _dot(_sub(centre, mid), o1) > 0 else 1), "screw"
+    inside = adsk.fusion.PointContainment.PointInsidePointContainment
+    blocked = []
+    for centre, outward in hole["openings"]:
+        hit = False
+        for d in CLEAR:
+            p = _add(centre, outward, d)
+            for name, screw, bodies, box in others:
+                if screw or not _in_box(p, box):
+                    continue
+                if any(_safe(lambda: b.pointContainment(_p3(p)) == inside, False) for b in bodies):
+                    hit = True
+                    break
+            if hit:
+                break
+        blocked.append(hit)
+    if blocked[0] != blocked[1]:
+        return (1 if blocked[0] else 0), "other end blocked"
+    if hole.get("start"):
+        return (0 if _dist3(c1, hole["start"]) <= _dist3(c2, hole["start"]) else 1), "hole feature start"
+    return None, ""
 
 
 def key_of(entity):

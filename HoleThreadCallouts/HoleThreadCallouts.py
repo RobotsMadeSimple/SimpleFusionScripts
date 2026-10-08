@@ -236,6 +236,61 @@ class Controller:
         visible = {vid: {h["id"] for h in projections[vid]["holes"]} for vid in order}
         return projections, callouts.assign(order, visible, part.get("pinned"))
 
+    def _aspect(self, projection):
+        """A view's width / height on the exported image."""
+        viewport = self.app.activeViewport
+        crop = projection["crop"]
+        return crop[2] * viewport.width / max(1e-6, crop[3] * viewport.height)
+
+    def _label_room(self, data, part, found, projections, assigned):
+        """Size the labels for the whole image (callouts.label_scale, its views in rows) and make room
+        beside the part for them in each thread view whose padding wasn't set by hand: each label's
+        side is the one nearer its holes, and only those sides get room (callouts.side_room); the
+        view's projection is redone with it. Returns (scale, {view id: {(kind, label): side}})."""
+        design, viewport = self.design(), self.app.activeViewport
+        bodies = holes_mod.bodies(design, self.target)
+        gap = self._gap(data)
+        views = self.ordered(part)
+        bare = {v["id"]: projections[v["id"]] for v in views}                      # (the part alone)
+        sides = {}
+        for view in views:
+            if view["kind"] != "thread" or view.get("padding"):
+                continue
+            groups = {}
+            for h in bare[view["id"]]["holes"]:
+                if assigned.get(h["id"]) == view["id"]:
+                    groups.setdefault((h["kind"], h["label"]), []).append(h["center"][0])
+            sides[view["id"]] = {key: (callouts.label_side(xs), len(xs)) for key, xs in groups.items()}
+        scale = callouts.label_scale([self._aspect(bare[v["id"]]) for v in views], gap)
+        for _ in range(2):                  # (more room -> a wider image -> bigger labels -> more room)
+            for view in views:
+                labels = [("{}x {}{}".format(n, label, " dowel" if kind == "dowel" else ""), side)
+                          for (kind, label), (side, n) in sides.get(view["id"], {}).items()]
+                if not labels:
+                    continue
+                room = callouts.side_room(labels, scale, self._aspect(bare[view["id"]]))
+                apply_camera(viewport, view.get("camera"))
+                viewport.refresh()
+                _pump()
+                projections[view["id"]] = holes_mod.project(design, viewport, found, bodies, room)
+            scale = callouts.label_scale([self._aspect(projections[v["id"]]) for v in views], gap)
+        return scale, {vid: {key: side for key, (side, _) in groups.items()} for vid, groups in sides.items()}
+
+    @staticmethod
+    def _gap(data):
+        """The gap between views, as a fraction of the image height."""
+        return float(data["settings"].get("gap", 24)) / max(1.0, float(data["settings"].get("height", 900)))
+
+    def stitch_job(self, data, rendered, height=None):
+        """What the panel stitches: the views (in rows that keep the image page-shaped, callouts.rows),
+        the image height of each row and the gap."""
+        aspects = [r["aspect"] for r in rendered]
+        return {"views": [{"kind": r["view"]["kind"], "image": r["image"], "crop": r["crop"],
+                           "annotations": r["annotations"]} for r in rendered],
+                "rows": callouts.rows(aspects, self._gap(data)),
+                "height": int(height or data["settings"].get("height", 900)),
+                "gap": int(data["settings"].get("gap", 24))}
+
     def _capture(self, data, view, projection):
         """PNG bytes of the view (camera already set): the viewport re-rendered so the part's
         crop comes out `height` px tall, in the view's style."""
@@ -263,7 +318,7 @@ class Controller:
                     pass
 
     def render(self, view_ids=None):
-        """[{view, image (data URL), crop, annotations}] for the views (all, in order, by default).
+        """[{view, image (data URL), crop, annotations, aspect}] for the views (all, in order, by default).
         The camera and visual style are put back afterwards."""
         data = self.load()
         part = self.part(data)
@@ -275,6 +330,7 @@ class Controller:
         try:
             found = self._find_holes(data, part)
             projections, assigned = self._layout(data, part, found)
+            scale, sides = self._label_room(data, part, found, projections, assigned)
             for view in self.ordered(part):
                 if view_ids is not None and view["id"] not in view_ids:
                     continue
@@ -287,10 +343,12 @@ class Controller:
                     view["crop"] = projection["crop"]
                     remapped = True
                 annotations = callouts.build(view, projection["holes"], assigned, view.get("annotations"),
-                                             data["settings"].get("colors"))
+                                             data["settings"].get("colors"), self._aspect(projection), scale,
+                                             sides.get(view["id"]))
                 png = self._capture(data, view, projection)
                 out.append({"view": view, "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
-                            "crop": projection["crop"], "annotations": annotations})
+                            "crop": projection["crop"], "annotations": annotations,
+                            "aspect": self._aspect(projection)})
         finally:
             viewport.visualStyle = style
             apply_camera(viewport, camera)
@@ -633,9 +691,7 @@ class Controller:
             return False
         finally:
             progress.hide()
-        job = {"views": [{"kind": r["view"]["kind"], "image": r["image"], "crop": r["crop"],
-                          "annotations": r["annotations"]} for r in rendered],
-               "height": int(data["settings"].get("height", 900)), "gap": int(data["settings"].get("gap", 24))}
+        job = self.stitch_job(data, rendered)
         palette = self.ui.palettes.itemById(PALETTE_ID)
         palette.sendInfoToHTML("stitch", json.dumps(job))     # the panel draws and stitches, then sends "stitched"
         return True
