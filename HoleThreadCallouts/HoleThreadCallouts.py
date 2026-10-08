@@ -207,7 +207,9 @@ class Controller:
         design = self.design()
         timeline = _safe(lambda: (design.timeline.count, design.timeline.markerPosition), None)
         bodies = holes_mod.bodies(design, self.target)
-        key = json.dumps([self.part_key(), timeline, [_safe(lambda: b.faces.count, 0) for b in bodies],
+        _, occ = holes_mod.context(design, self.target)
+        place = _safe(lambda: occ.fullPathName, "") if occ is not None else ""    # (each occurrence: its own spot)
+        key = json.dumps([self.part_key(), place, timeline, [_safe(lambda: b.faces.count, 0) for b in bodies],
                           [_safe(lambda: b.revisionId, "") for b in bodies],
                           data["settings"].get("guess", True), part["marks"]], sort_keys=True)
         if self._holes_cache and self._holes_cache[0] == key:

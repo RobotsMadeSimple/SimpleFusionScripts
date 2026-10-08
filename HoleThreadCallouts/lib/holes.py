@@ -87,8 +87,8 @@ def _proxy(face, occ):
 # ------------------------------------------------------------ hole geometry
 
 def _hole_geometry(face):
-    """{"key", "radius" (cm), "axis", "openings": [(centre, outward)], "face"} for a concave
-    cylindrical face, else None."""
+    """{"key", "line", "t0", "t1", "radius" (cm), "axis", "openings": [(centre, outward)], "face", ...}
+    for a concave cylindrical face, else None."""
     cyl = adsk.core.Cylinder.cast(_safe(lambda: face.geometry))
     if cyl is None:
         return None
@@ -125,46 +125,88 @@ def _hole_geometry(face):
             continue                            # a blind hole's bottom: material beyond it
         sign = 1 if _dot(_sub(c, mid), axis) >= 0 else -1
         openings.append((c, (axis[0] * sign, axis[1] * sign, axis[2] * sign)))
-    # Key: the axis line (its point nearest the world origin) + direction + radius, rounded.
-    # (Rounded first, and -0.0 made 0.0: two faces of one hole -- e.g. a threaded and a plain part --
-    # differ in the last bits, which made "-0.000" and "0.000", or flipped the axis, and so two holes.)
+    # The axis line: its point nearest the world origin + direction (one way round) + radius, rounded first
+    # and -0.0 made 0.0 (two faces of one hole differ in the last bits). Holes on one line (e.g. at both
+    # ends of a part) share it; where along the line a face is ("t", cm) tells them apart.
     foot = _sub(origin, tuple(a * _dot(origin, axis) for a in axis))
     tidy = tuple(round(a, 5) + 0.0 for a in axis)
     flip = -1 if tidy < (0, 0, 0) else 1
-    key = "{:.3f},{:.3f},{:.3f}|{:.3f},{:.3f},{:.3f}|{:.4f}".format(
-        *(round(v, 3) + 0.0 for v in (foot[0], foot[1], foot[2], tidy[0] * flip, tidy[1] * flip, tidy[2] * flip)),
-        radius)
-    return {"key": key, "radius": radius, "axis": axis, "openings": openings, "face": face}
+    direction = _norm(tuple(a * flip for a in tidy))
+    line = "{:.3f},{:.3f},{:.3f}|{:.3f},{:.3f},{:.3f}|{:.4f}".format(
+        *(round(v, 3) + 0.0 for v in (foot[0], foot[1], foot[2]) + direction), radius)
+    ts = [_dot(_sub(c, foot), direction) for c in centres] + [_dot(_sub(_v(p), foot), direction)]
+    t0, t1 = min(ts), max(ts)
+    return {"key": "{}|{:.3f}".format(line, round(t0, 3) + 0.0), "line": line, "t0": t0, "t1": t1,
+            "radius": radius, "axis": axis, "direction": direction, "foot": foot, "openings": openings, "face": face}
 
 
 def _dist3(a, b):
     return math.sqrt(_dot(_sub(a, b), _sub(a, b)))
 
 
+TOUCH = 0.01        # cm: faces on one line this close (or overlapping) are one hole
+BOTH_ENDS = 4.0     # a through hole at least this many diameters long is tapped from each end
+
+
+def _merge(faces):
+    """Holes from hole faces: faces on one axis line that touch (a hole split into a threaded and a plain
+    part, or cut by a slot) are one hole; faces apart on the line (holes at both ends of a part) are not.
+    A merged hole's openings are only those at its two ends."""
+    lines = {}
+    for geo in faces.values():
+        lines.setdefault(geo["line"], []).append(geo)
+    out = []
+    for line, group in lines.items():
+        group.sort(key=lambda g: g["t0"])
+        runs = [[group[0]]]
+        for geo in group[1:]:
+            if geo["t0"] <= max(g["t1"] for g in runs[-1]) + TOUCH:
+                runs[-1].append(geo)
+            else:
+                runs.append([geo])
+        for run in runs:
+            t0, t1 = run[0]["t0"], max(g["t1"] for g in run)
+            first = run[0]
+            ends = []
+            for geo in run:
+                for centre, outward in geo["openings"]:
+                    t = _dot(_sub(centre, first["foot"]), first["direction"])
+                    if (abs(t - t0) < 1e-3 or abs(t - t1) < 1e-3) and                             all(_dist3(centre, c) > 1e-4 for c, _ in ends):
+                        ends.append((centre, outward))
+            tagged = next((g for g in run if g.get("label")), {})
+            out.append({"id": first["key"], "members": [g["key"] for g in run], "radius": first["radius"],
+                        "axis": first["axis"], "openings": ends, "length": t1 - t0,
+                        "label": tagged.get("label"), "source": tagged.get("source")})
+    return out
+
+
 def find(design, guess=True, marks=None, target=None):
     """[hole] with {"id", "kind" ("thread"|"dowel"), "label", "source", "diameter" (mm),
-    "radius" (cm), "axis", "openings"} -- only holes with a size (or marked as dowels)."""
+    "radius" (cm), "axis", "openings", "length" (cm)} -- only holes with a size (or marked as dowels).
+
+    A long through hole (BOTH_ENDS diameters or more, e.g. across a part's whole width) is tapped from
+    each end, so it's two holes ("<id>|1", "<id>|2"), each with one opening."""
     marks = marks or {}
     comp, occ = context(design, target)
-    holes = {}
+    faces = {}
     for body in bodies(design, target):
         for face in body.faces:
             try:
                 geo = _hole_geometry(face)
             except Exception:
                 geo = None
-            if geo is not None and geo["key"] not in holes:
-                holes[geo["key"]] = geo
+            if geo is not None and geo["key"] not in faces:
+                faces[geo["key"]] = geo
 
-    def tag(faces, label, source):
-        for face in faces:
+    def tag(feature_faces, label, source):
+        for face in feature_faces:
             try:
                 geo = _hole_geometry(_proxy(face, occ))
             except Exception:
                 continue
-            if geo is not None and geo["key"] in holes:
-                holes[geo["key"]].setdefault("label", label)
-                holes[geo["key"]].setdefault("source", source)
+            if geo is not None and geo["key"] in faces:
+                faces[geo["key"]].setdefault("label", label)
+                faces[geo["key"]].setdefault("source", source)
 
     features = comp.features
     for thread in _safe(lambda: features.threadFeatures, []) or []:
@@ -172,7 +214,8 @@ def find(design, guess=True, marks=None, target=None):
         if info is None or not _safe(lambda: info.isInternal, True):
             continue
         label = callouts.size_label(_safe(lambda: info.threadDesignation, "") or _safe(lambda: info.threadSize, ""))
-        tag(_safe(lambda: list(thread.inputCylindricalFaces), []) or [], label, "thread")
+        # (the thread's own faces: its inputCylindricalFaces only read with the timeline rolled back to it)
+        tag(_safe(lambda: list(thread.faces), []) or [], label, "thread")
     tapped = (adsk.fusion.HoleTapTypes.TappedHoleTapType, adsk.fusion.HoleTapTypes.TaperTappedHoleTapType)
     for hole_feature in _safe(lambda: features.holeFeatures, []) or []:
         if _safe(lambda: hole_feature.holeTapType) not in tapped:
@@ -182,9 +225,9 @@ def find(design, guess=True, marks=None, target=None):
         tag(_safe(lambda: list(hole_feature.sideFaces), []) or [], label, "tapped")
 
     out = []
-    for key, h in holes.items():
+    for h in _merge(faces):
         diameter = round(h["radius"] * 20.0, 3)          # cm radius -> mm diameter
-        mark = marks.get(key)
+        mark = next((marks[k] for k in [h["id"]] + h["members"] if k in marks), None)
         kind = "thread"
         if mark == "none":
             continue
@@ -198,8 +241,13 @@ def find(design, guess=True, marks=None, target=None):
             label, source = callouts.guess_size(diameter), "guess"
         else:
             continue
-        out.append({"id": key, "kind": kind, "label": label, "source": source, "diameter": diameter,
-                    "radius": h["radius"], "axis": h["axis"], "openings": h["openings"]})
+        hole = {"id": h["id"], "kind": kind, "label": label, "source": source, "diameter": diameter,
+                "radius": h["radius"], "axis": h["axis"], "openings": h["openings"], "length": h["length"]}
+        if kind == "thread" and len(h["openings"]) == 2 and h["length"] * 10.0 >= BOTH_ENDS * diameter:
+            for n, opening in enumerate(h["openings"], 1):
+                out.append(dict(hole, id="{}|{}".format(h["id"], n), openings=[opening]))
+        else:
+            out.append(hole)
     out.sort(key=lambda h: (h["kind"], callouts.size_key(h["label"]), h["id"]))
     return out
 

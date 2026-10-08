@@ -8,6 +8,8 @@ for that component (kept in the design). While a tool looks at a part, only that
 
 import base64
 import json
+import math
+import re
 import threading
 import uuid
 from contextlib import contextmanager
@@ -17,8 +19,9 @@ import adsk.fusion
 
 from . import holes as holes_mod, log, mcp_server
 
-VIEWS = ["iso_top_right", "iso_top_left", "iso_bottom_right", "iso_bottom_left",
-         "top", "bottom", "front", "back", "left", "right"]
+FLAT = ["top", "bottom", "front", "back", "left", "right"]       # straight at a face: orthographic, "flat"
+ISO = ["iso_top_right", "iso_top_left", "iso_bottom_right", "iso_bottom_left"]
+VIEWS = FLAT + ISO
 
 PART = {"type": "string", "description": "An occurrence path from list_parts (\"\" = the root component)"}
 BODIES = {"type": "array", "items": {"type": "string"},
@@ -37,15 +40,19 @@ TOOLS = [
           {"filter": {"type": "string", "description": "Only names / paths containing this"}}),
     _tool("get_holes", "A part's threaded and dowel holes: each hole's id, size, diameter, and where the size "
           "came from (thread = modelled thread, tapped = tapped hole feature, guess = tap-drill diameter, "
-          "manual = marked), plus a count per size.", {"part": PART, "bodies": BODIES}, ["part"]),
+          "manual = marked), where it is, plus a count per size. A long through hole is tapped from each end, so "
+          "it's two holes. Also cross-checks against the screws in the assembly: which holes have a screw in "
+          "them, and screws that end in the part where no threaded hole was found.",
+          {"part": PART, "bodies": BODIES}, ["part"]),
     _tool("list_views", "A part's views (thread views in export order, then the shaded view).",
           {"part": PART}, ["part"]),
-    _tool("auto_views", "Set up thread views that between them show every threaded hole (picked from the "
-          "standard and isometric views, fewest first), plus a shaded iso view at the end. Keeps the part's "
-          "existing views unless replace is true.",
+    _tool("auto_views", "Set up thread views that between them show every threaded hole: flat (orthographic) "
+          "views straight at the part's faces, fewest first, so each face the holes open on gets its own. Keeps "
+          "the part's existing views unless replace is true.",
           {"part": PART, "bodies": BODIES,
            "replace": {"type": "boolean", "description": "Replace the part's existing views (default false)"},
-           "shaded": {"type": "boolean", "description": "Add a shaded view at the end (default true)"}},
+           "iso": {"type": "boolean", "description": "Also consider isometric views (default false: flat only)"},
+           "shaded": {"type": "boolean", "description": "Add a shaded iso view at the end (default false)"}},
           ["part"]),
     _tool("add_view", "Add a view of the part from a standard direction (fitted to the part).",
           {"part": PART, "bodies": BODIES, "view": {"type": "string", "enum": VIEWS},
@@ -60,8 +67,11 @@ TOOLS = [
           ["part", "hole_ids", "as"]),
     _tool("export_image", "Render the part's callout image (its views side by side, holes filled in their "
           "size's colour, one \"2x M3\" callout per size) and save it as a PNG. Sets up views first "
-          "(auto_views) if the part has none. Returns the picture and the file's path.",
+          "(auto_views: flat views) if the part has none, or anew with replace_views. Returns the picture and the "
+          "file's path.",
           {"part": PART, "bodies": BODIES,
+           "replace_views": {"type": "boolean", "description": "Set up the views anew first (flat views, no shaded "
+                                                               "view)"},
            "path": {"type": "string", "description": "Where to save the PNG (default: the add-in's data folder, "
                                                      "exports/<design> - <part> threads.png)"},
            "height": {"type": "integer", "minimum": 100, "maximum": 4000,
@@ -188,6 +198,8 @@ def _look(ctrl, name):
     viewport = ctrl.app.activeViewport
     cam = viewport.camera
     cam.viewOrientation = _views()[name]
+    if name in FLAT:
+        cam.cameraType = adsk.core.CameraTypes.OrthographicCameraType
     cam.isSmoothTransition = False
     viewport.camera = cam
     _settle(ctrl)
@@ -237,12 +249,105 @@ def _list_parts(ctrl, args):
     return _text(list(rows.values()))
 
 
+SCREW = re.compile(r"(?i)screw|shcs|bhcs|fhcs|bolt|cap head|\bM\d+(\.\d+)?\s*x\s*\d")
+
+
+def _face_name(outward):
+    """"+X" / "-Z" ... for an opening's outward direction (the nearest axis), or "angled"."""
+    k = max(range(3), key=lambda i: abs(outward[i]))
+    if abs(outward[k]) < 0.9:
+        return "angled"
+    return ("+" if outward[k] > 0 else "-") + "XYZ"[k]
+
+
+def _screws(ctrl, occ):
+    """[(name, axis index, centre line (a, b), (lo, hi) along the axis, cm)] of screw-like parts outside
+    `occ` (by name), shown or hidden; the axis is the box's long side (straight screws only)."""
+    target = occ.fullPathName if occ is not None else None
+    out = []
+    for o in ctrl.design().rootComponent.allOccurrences:
+        path = o.fullPathName
+        if target and (path == target or path.startswith(target + "+") or target.startswith(path + "+")):
+            continue
+        if not o.component.bRepBodies.count or not SCREW.search(o.component.name):
+            continue
+        box = o.boundingBox
+        lo = (box.minPoint.x, box.minPoint.y, box.minPoint.z)
+        hi = (box.maxPoint.x, box.maxPoint.y, box.maxPoint.z)
+        k = max(range(3), key=lambda i: hi[i] - lo[i])
+        others = [i for i in range(3) if i != k]
+        out.append((path, k, tuple((lo[i] + hi[i]) / 2.0 for i in others), (lo[k], hi[k])))
+    return out
+
+
+def _engages(bodies, screw, ring=0.14):
+    """Where along its axis a screw threads into the part: points `ring` cm from its axis (between an M3
+    tap drill's radius and the screw's) lie in the part's material for at least ~1 mm. A clearance hole
+    leaves them in the air. Returns the middle of the engaged stretch (a point on the axis), or None."""
+    _, k, (a, b), (t0, t1) = screw
+    others = [i for i in range(3) if i != k]
+    inside = adsk.fusion.PointContainment.PointInsidePointContainment
+    hits = []
+    t0, t1 = t0 + 0.03, t1 - 0.03         # (not its very ends: a head resting on the part only touches it)
+    steps = max(4, int((t1 - t0) / 0.025))
+    for n in range(steps + 1):
+        t = t0 + (t1 - t0) * n / steps
+        count = 0
+        for da, db in ((ring, 0), (-ring, 0), (0, ring), (0, -ring)):
+            p = [0.0, 0.0, 0.0]
+            p[k], p[others[0]], p[others[1]] = t, a + da, b + db
+            pt = adsk.core.Point3D.create(*p)
+            if any(body.pointContainment(pt) == inside for body in bodies):
+                count += 1
+        if count >= 3:
+            hits.append(t)
+    if len(hits) < 4:                     # (at least ~1 mm of thread, not a graze)
+        return None
+    p = [0.0, 0.0, 0.0]
+    p[k], p[others[0]], p[others[1]] = (min(hits) + max(hits)) / 2.0, a, b
+    return tuple(p)
+
+
 def _get_holes(ctrl, args):
     with _on(ctrl, args.get("part")) as occ, _isolated(ctrl, occ, args.get("bodies")):
         found = _found(ctrl)
-    holes = [{"id": h["id"], "kind": h["kind"], "size": h["label"], "source": h["source"],
-              "diameter_mm": h["diameter"], "openings": len(h["openings"])} for h in found]
-    return _text({"part": args.get("part"), "count_by_size": _summary(found), "holes": holes})
+        bodies = holes_mod.bodies(ctrl.design(), ctrl.target)
+        engaged = []                    # (screw name, point on its axis where it threads into the part)
+        for screw in _screws(ctrl, occ):
+            spot = _engages(bodies, screw)
+            if spot is not None:
+                engaged.append((screw[0], spot))
+    used = set()
+    holes = []
+    for h in found:
+        row = {"id": h["id"], "kind": h["kind"], "size": h["label"], "source": h["source"],
+               "diameter_mm": h["diameter"], "depth_mm": round(h.get("length", 0) * 10.0, 1),
+               "opens_on": [_face_name(o) for _, o in h["openings"]],
+               "at_mm": [round(v * 10.0, 1) for v in h["openings"][0][0]] if h["openings"] else None}
+        # The screws threading into this hole: their engaged spot is on the hole's axis, on this hole's
+        # side of the part (a hole tapped from both ends: the nearer end).
+        hits = []
+        tapped_from_both_ends = h["id"].count("|") == 4         # ("<line>|<t0>|1" / "|2": one end's half)
+        reach = h.get("length", 1.0) / (2.0 if tapped_from_both_ends else 1.0)
+        for name, spot in engaged:
+            for centre, outward in h["openings"]:
+                rel = tuple(spot[i] - centre[i] for i in range(3))
+                along = -sum(rel[i] * outward[i] for i in range(3))
+                off = math.sqrt(max(0.0, sum(r * r for r in rel) - along * along))
+                if off < 0.03 and -0.05 <= along <= reach + 0.05 and name not in hits:
+                    hits.append(name)
+        if hits:
+            row["screws"] = hits
+            used.update(hits)
+        holes.append(row)
+    out = {"part": args.get("part"), "count_by_size": _summary(found), "holes": holes,
+           "holes_with_a_screw": len([h for h in holes if h.get("screws")])}
+    missed = [name for name, _ in engaged if name not in used]
+    if missed:
+        out["screws_threading_into_the_part_without_a_hole_found"] = missed
+        out["note"] = ("These screws cut into the part's material where no threaded hole was found: a hole "
+                       "that should be threaded but isn't modelled or sized as one (check, then mark_holes).")
+    return _text(out)
 
 
 def _list_views(ctrl, args):
@@ -261,7 +366,7 @@ def _new_view(kind, camera):
     return {"id": uuid.uuid4().hex[:8], "kind": kind, "camera": camera, "annotations": []}
 
 
-def _auto(ctrl, occ, replace=False, shaded=True):
+def _auto(ctrl, occ, replace=False, shaded=False, iso=False):
     """Pick views that show every hole (greedy, isometric views first); returns (added, uncovered)."""
     viewport = ctrl.app.activeViewport
     camera, style = _camera_dict(ctrl), viewport.visualStyle
@@ -272,7 +377,8 @@ def _auto(ctrl, occ, replace=False, shaded=True):
     bodies = holes_mod.bodies(ctrl.design(), ctrl.target)
     seen = {}
     try:
-        for name in VIEWS:
+        candidates = FLAT + (ISO if iso else [])
+        for name in candidates + (["iso_top_right"] if shaded and not iso else []):
             cam = _look(ctrl, name)
             projection = holes_mod.project(ctrl.design(), viewport, threads, bodies)
             seen[name] = (cam, {h["id"] for h in projection["holes"]})
@@ -287,7 +393,7 @@ def _auto(ctrl, occ, replace=False, shaded=True):
         wanted = {h["id"] for h in threads}
         added = []
         while wanted - covered:
-            best = max(VIEWS, key=lambda n: len(seen[n][1] & (wanted - covered)))
+            best = max(candidates, key=lambda n: len(seen[n][1] & (wanted - covered)))
             gain = seen[best][1] & (wanted - covered)
             if not gain:
                 break
@@ -306,7 +412,8 @@ def _auto(ctrl, occ, replace=False, shaded=True):
 
 def _auto_views(ctrl, args):
     with _on(ctrl, args.get("part")) as occ, _isolated(ctrl, occ, args.get("bodies")):
-        added, uncovered = _auto(ctrl, occ, bool(args.get("replace")), args.get("shaded", True))
+        added, uncovered = _auto(ctrl, occ, bool(args.get("replace")), bool(args.get("shaded")),
+                                 bool(args.get("iso")))
     ctrl.push_state()
     out = {"added": added}
     if uncovered:
@@ -366,8 +473,8 @@ def _export_image(ctrl, args):
     path_arg = args.get("part") or ""
     with _on(ctrl, path_arg) as occ, _isolated(ctrl, occ, args.get("bodies")):
         data = ctrl.load()
-        if not [v for v in ctrl.part(data)["views"] if v["kind"] == "thread"]:
-            _auto(ctrl, occ)
+        if args.get("replace_views") or not [v for v in ctrl.part(data)["views"] if v["kind"] == "thread"]:
+            _auto(ctrl, occ, replace=bool(args.get("replace_views")))
             data = ctrl.load()
         if not [v for v in ctrl.part(data)["views"] if v["kind"] == "thread"]:
             return _fail("The part has no threaded holes to show (see get_holes).")
