@@ -65,8 +65,7 @@ Type: filesandordirs; Name: "{app}\HoleThreadCallouts\lib\__pycache__"
 FinishedLabel=The add-ins are installed.%n%nRestart Fusion (close it completely and open it again). They start on their own: BuildBook's button is in the Utilities tab, under Add-Ins.
 
 [Code]
-const
-  FILE_ATTRIBUTE_REPARSE_POINT = $400;
+{ (FILE_ATTRIBUTE_REPARSE_POINT comes with Inno Setup) }
 
 function IsLink(const Path: String): Boolean;
 var
