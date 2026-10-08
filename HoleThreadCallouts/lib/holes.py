@@ -347,6 +347,51 @@ def key_of(entity):
 
 # ------------------------------------------------------------ a view
 
+def fit_inside(viewport, part_bodies, margin=0.03):
+    """Zoom the camera out (and centre it on the part) until the part is wholly inside the viewport:
+    a view saved in a bigger window, or framed tight, would otherwise lose the part's ends in the
+    capture. Returns True if the camera changed."""
+    changed = False
+    vw, vh = float(viewport.width), float(viewport.height)
+    for _ in range(4):
+        xs, ys, lo, hi = [], [], None, None
+        for body in part_bodies:
+            box = body.boundingBox
+            a, b = _v(box.minPoint), _v(box.maxPoint)
+            lo = a if lo is None else tuple(map(min, lo, a))
+            hi = b if hi is None else tuple(map(max, hi, b))
+        if lo is None:
+            return changed
+        for i in range(8):
+            q = viewport.modelToViewSpace(_p3((hi[0] if i & 1 else lo[0], hi[1] if i & 2 else lo[1],
+                                               hi[2] if i & 4 else lo[2])))
+            xs.append(q.x / vw)
+            ys.append(q.y / vh)
+        if min(xs) >= margin and min(ys) >= margin and max(xs) <= 1 - margin and max(ys) <= 1 - margin:
+            return changed
+        need = max((max(xs) - min(xs)) / (1 - 2 * margin), (max(ys) - min(ys)) / (1 - 2 * margin), 1.0) * 1.04
+        cam = viewport.camera
+        eye, target = _v(cam.eye), _v(cam.target)
+        look = _norm(_sub(target, eye))
+        centre = tuple((a + b) / 2.0 for a, b in zip(lo, hi))
+        off = _sub(centre, target)
+        shift = _sub(off, tuple(look[i] * _dot(off, look) for i in range(3)))   # (across the view only)
+        target = _add(target, shift)
+        if cam.cameraType == adsk.core.CameraTypes.OrthographicCameraType:
+            cam.viewExtents = cam.viewExtents * need
+            eye = _add(eye, shift)
+        else:
+            eye = _add(target, _sub(_add(eye, shift), target), need)
+        cam.eye = _p3(eye)
+        cam.target = _p3(target)
+        cam.isFitView = False
+        cam.isSmoothTransition = False
+        viewport.camera = cam
+        viewport.refresh()
+        changed = True
+    return changed
+
+
 def project(design, viewport, holes, part_bodies, padding=None):
     """Where things are in the viewport (camera already set): 0..1 of its width / height.
 

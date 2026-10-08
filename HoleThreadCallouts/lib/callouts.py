@@ -12,8 +12,8 @@ holes and projects them into each view; this decides what's drawn:
   one of its holes. Callouts the user moved keep their place (and their arrow's hole,
   and their text if they changed it); new ones go beside the part, in the room left
   and right of it (side_room), on the side nearer their hole, clear of each other;
-- labels are sized for the page: label_scale() makes them bigger on a wide image (many
-  views side by side), which a page shrinks to fit its width.
+- labels are sized for the page: page_layout() puts the views in the rows that show them biggest on
+  a page (at most PAGE_W x PAGE_H), and label_scale() makes the text LABEL_PX tall there.
 
 Coordinates are 0..1 of the view's (cropped) image, y down, as in palette/annot_draw.js.
 """
@@ -40,10 +40,11 @@ TAP_TOLERANCE = 0.06            # mm
 TEXT = {"color": "#222222", "size": 48, "bold": True, "box": True, "leader": True, "weight": 9}
 CHAR_W = 0.62           # average width of a bold Helvetica character, in text heights
 EDGE = 0.015            # labels' distance from the image's side (0..1 of the view's width)
-GAP = 0.12              # room between a label and the part (in image heights)
-PAGE_ASPECT = 2.6       # width / height a page shows an image at before shrinking it to fit
-ROW_ASPECT = 4.2        # wider than this, the views wrap into another row (below that, labels grow instead)
-MAX_SCALE = 2.2
+GAP = 0.12              # room between a label and the part (in image heights, at TEXT's size; grows with it)
+PAGE_W, PAGE_H = 860, 330      # px: the most a page shows an image at (wider ones shrink to PAGE_W)
+LABEL_PX = 32           # px: a label's text height on the page, at that size
+MAX_ROWS = 4
+MAX_SCALE = 8.0
 MARK_OUTLINE = "#333333"
 
 
@@ -106,16 +107,15 @@ def _dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def rows(aspects, gap=0.04, target=None, last_stays=True):
-    """The stitched image's rows: [[view index, ...], ...], views in order, a new row when the next
-    view would make the row wider than `target` (width / height, default ROW_ASPECT; a view wider than
-    that gets a row of its own). With last_stays the last view (the shaded one) always ends the last
-    row, on the right. Keeps a many-view image from getting so wide that a page shrinks it to nothing."""
-    target = ROW_ASPECT if target is None else target
+def _pack(aspects, n, gap):
+    """Views (in order) into about n rows of even width; the last view (the shaded one) always ends
+    the last row, on the right."""
+    total = sum(aspects) + gap * max(0, len(aspects) - 1)
+    target = total / n
     out, width = [], 0.0
     for i, a in enumerate(aspects):
-        last = last_stays and i == len(aspects) - 1 and out
-        if out and (last or width + gap + a <= target):
+        last = i == len(aspects) - 1 and out
+        if out and (last or width + gap + a / 2.0 <= target):
             out[-1].append(i)
             width += gap + a
         else:
@@ -128,12 +128,35 @@ def _row_aspect(aspects, row, gap):
     return sum(aspects[i] for i in row) + gap * max(0, len(row) - 1)
 
 
+def page_layout(aspects, gap=0.04):
+    """(rows, row height on the page in px) for views with these width / height ratios (gaps as a
+    fraction of a row's height): the rows (1..MAX_ROWS) that give each row the most height when a page
+    shows the image at most PAGE_W wide and PAGE_H tall, so its labels can be read."""
+    best = None
+    for n in range(1, min(MAX_ROWS, len(aspects)) + 1):
+        layout = _pack(aspects, n, gap)
+        k = len(layout)
+        wide = max(_row_aspect(aspects, r, gap) for r in layout)
+        tall = k + gap * (k - 1)                        # (image height, in row heights)
+        shown = min(float(PAGE_H), PAGE_W * tall / wide)  # (its height on the page)
+        row_px = shown / tall
+        if best is None or row_px > best[1] * 1.05:     # (more rows only for a real gain)
+            best = (layout, row_px)
+    return best or ([], float(PAGE_H))
+
+
+def rows(aspects, gap=0.04):
+    """The stitched image's rows: [[view index, ...], ...] (page_layout)."""
+    return page_layout(aspects, gap)[0]
+
+
 def label_scale(aspects, gap=0.04):
-    """How much bigger labels must be on a stitched image of views with these width/height ratios
-    (gaps as a fraction of the height), laid out in rows(): a page shrinks an image to fit its width,
-    so a row wider than PAGE_ASPECT would make the text small. 1 when every row fits."""
-    widest = max((_row_aspect(aspects, r, gap) for r in rows(aspects, gap)), default=0.0)
-    return max(1.0, min(MAX_SCALE, widest / PAGE_ASPECT))
+    """How big labels must be (as a multiple of TEXT's size, which is in 1/1000 of a row's height) for
+    their text to come out LABEL_PX tall on the page (page_layout); never smaller than TEXT's size."""
+    if not aspects:
+        return 1.0
+    row_px = page_layout(aspects, gap)[1]
+    return max(1.0, min(MAX_SCALE, LABEL_PX * 1000.0 / (TEXT["size"] * max(row_px, 1.0))))
 
 
 def label_width(text, size):
@@ -153,7 +176,7 @@ def side_room(labels, scale, part_aspect):
     its widest label plus a gap for the arrow, and none if it has no label."""
     room = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
     for text, side in labels:
-        need = (label_width(text, TEXT["size"] * scale) + GAP + EDGE) / max(part_aspect, 1e-3)
+        need = (label_width(text, TEXT["size"] * scale) + GAP * scale + EDGE) / max(part_aspect, 1e-3)
         room[side] = max(room[side], need)
     return room
 

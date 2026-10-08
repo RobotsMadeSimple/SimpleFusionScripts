@@ -380,6 +380,58 @@ def _new_view(kind, camera):
     return {"id": uuid.uuid4().hex[:8], "kind": kind, "camera": camera, "annotations": []}
 
 
+def _up(ctrl):
+    """The design's up direction: Z, or Y in a Y-up design."""
+    try:
+        y_up = ctrl.app.preferences.generalPreferences.defaultModelingOrientation == \
+            adsk.core.DefaultModelingOrientations.YUpModelingOrientation
+    except Exception:
+        y_up = False
+    return (0.0, 1.0, 0.0) if y_up else (0.0, 0.0, 1.0)
+
+
+def _shaded_look(ctrl, holes):
+    """Camera for the shaded view: an isometric corner, the design's up kept up (the part sits as it's
+    assembled), turned to the side the threaded holes open on (where they're tapped from), from above
+    unless they're tapped from below. Fitted to what's shown. Returns the corner's name."""
+    up = _up(ctrl)
+    facing = [0.0, 0.0, 0.0]
+    for h in holes:
+        for _, outward in h["openings"]:
+            facing = [facing[i] + outward[i] for i in range(3)]
+    n = math.sqrt(sum(f * f for f in facing))
+    facing = [f / n for f in facing] if n > 1e-6 else [0.0, 0.0, 0.0]
+    usual = (1.0, 1.0, 1.0) if up[1] else (1.0, -1.0, 1.0)     # (Fusion's iso top right)
+    best, score = None, None
+    for sx in (1, -1):
+        for sy in (1, -1):
+            for sz in (1, -1):
+                c = [sx / math.sqrt(3), sy / math.sqrt(3), sz / math.sqrt(3)]
+                value = (2.0 * sum(c[i] * facing[i] for i in range(3)) + 0.6 * sum(c[i] * up[i] for i in range(3))
+                         + 0.2 * sum(c[i] * usual[i] for i in range(3)) / math.sqrt(3))
+                if score is None or value > score + 1e-9:
+                    best, score = c, value
+    bodies = holes_mod.bodies(ctrl.design(), ctrl.target)
+    lo = [min(getattr(b.boundingBox.minPoint, a) for b in bodies) for a in "xyz"]
+    hi = [max(getattr(b.boundingBox.maxPoint, a) for b in bodies) for a in "xyz"]
+    centre = [(a + b) / 2.0 for a, b in zip(lo, hi)]
+    span = max(1.0, math.sqrt(sum((b - a) ** 2 for a, b in zip(lo, hi))))
+    viewport = ctrl.app.activeViewport
+    cam = viewport.camera
+    cam.cameraType = adsk.core.CameraTypes.OrthographicCameraType
+    cam.target = adsk.core.Point3D.create(*centre)
+    cam.eye = adsk.core.Point3D.create(*(centre[i] + best[i] * span * 5.0 for i in range(3)))
+    cam.upVector = adsk.core.Vector3D.create(*up)
+    cam.isFitView = False
+    cam.isSmoothTransition = False
+    viewport.camera = cam
+    _settle(ctrl)
+    viewport.fit()
+    _settle(ctrl)
+    names = {0: "+X" if best[0] > 0 else "-X", 1: "+Y" if best[1] > 0 else "-Y", 2: "+Z" if best[2] > 0 else "-Z"}
+    return "{} {} {}".format(names[0], names[1], names[2])
+
+
 def _auto(ctrl, occ, replace=False, shaded=True, iso=False):
     """Pick views that show every hole (greedy, isometric views first); returns (added, uncovered)."""
     viewport = ctrl.app.activeViewport
@@ -392,7 +444,7 @@ def _auto(ctrl, occ, replace=False, shaded=True, iso=False):
     seen = {}
     try:
         candidates = FLAT + (ISO if iso else [])
-        for name in candidates + (["iso_top_right"] if shaded and not iso else []):
+        for name in candidates:
             cam = _look(ctrl, name)
             projection = holes_mod.project(ctrl.design(), viewport, threads, bodies)
             seen[name] = (cam, {h["id"] for h in projection["holes"]})
@@ -415,8 +467,9 @@ def _auto(ctrl, occ, replace=False, shaded=True, iso=False):
             added.append({"view": best, "holes": len(gain)})
             covered |= gain
         if shaded and not [v for v in part["views"] if v["kind"] == "shaded"]:
-            part["views"].append(_new_view("shaded", seen["iso_top_right"][0]))
-            added.append({"view": "iso_top_right", "kind": "shaded"})
+            corner = _shaded_look(ctrl, threads)
+            part["views"].append(_new_view("shaded", _camera_dict(ctrl)))
+            added.append({"view": "iso " + corner, "kind": "shaded"})
         ctrl.save(data)
     finally:
         viewport.visualStyle = style

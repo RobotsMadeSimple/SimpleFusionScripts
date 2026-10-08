@@ -229,6 +229,9 @@ class Controller:
             apply_camera(viewport, view.get("camera"))
             viewport.refresh()
             _pump()
+            if holes_mod.fit_inside(viewport, bodies):          # (part ran off the window: zoomed out)
+                _pump()
+                view["camera"] = camera_to_dict(viewport.camera)
             with log.timed("project " + view["id"]):
                 projections[view["id"]] = holes_mod.project(design, viewport, found if view["kind"] == "thread" else [],
                                                              bodies, view.get("padding"))
@@ -262,7 +265,7 @@ class Controller:
                     groups.setdefault((h["kind"], h["label"]), []).append(h["center"][0])
             sides[view["id"]] = {key: (callouts.label_side(xs), len(xs)) for key, xs in groups.items()}
         scale = callouts.label_scale([self._aspect(bare[v["id"]]) for v in views], gap)
-        for _ in range(2):                  # (more room -> a wider image -> bigger labels -> more room)
+        for _ in range(3):                  # (more room -> a wider image -> bigger labels -> more room)
             for view in views:
                 labels = [("{}x {}{}".format(n, label, " dowel" if kind == "dowel" else ""), side)
                           for (kind, label), (side, n) in sides.get(view["id"], {}).items()]

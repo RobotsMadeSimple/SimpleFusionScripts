@@ -119,11 +119,18 @@ class RemapTests(unittest.TestCase):
 
 
 class LabelTests(unittest.TestCase):
-    def test_scale_grows_only_for_wide_images(self):
-        self.assertEqual(callouts.label_scale([1.0, 1.2]), 1.0)
-        self.assertGreater(callouts.label_scale([2.0, 2.0, 1.5]), 1.0)        # one row, wider than a page
-        self.assertGreater(callouts.label_scale([4.0, 1.0]), 1.0)
-        self.assertEqual(callouts.label_scale([10.0, 10.0]), callouts.MAX_SCALE)
+    def test_labels_come_out_page_sized(self):
+        for aspects in ([1.0, 1.2], [2.0, 2.0, 1.5], [5.0, 1.0], [0.8, 0.8, 1.4, 1.4, 1.6]):
+            layout, row_px = callouts.page_layout(aspects)
+            size = callouts.TEXT["size"] * callouts.label_scale(aspects)
+            self.assertAlmostEqual(size / 1000.0 * row_px, callouts.LABEL_PX, delta=0.5)
+
+    def test_wide_images_wrap_and_the_shaded_view_stays_last(self):
+        layout, _ = callouts.page_layout([0.8, 0.8, 1.4, 1.4, 1.6])
+        self.assertGreater(len(layout), 1)
+        self.assertEqual(layout[-1][-1], 4)
+        self.assertEqual(sorted(i for r in layout for i in r), [0, 1, 2, 3, 4])
+        self.assertEqual(callouts.rows([1.0, 1.0]), [[0, 1]])           # small: one row
 
     def test_room_beside_the_part(self):
         room = callouts.side_room([("4x M3", "left")], 1.0, 1.0)
@@ -133,15 +140,6 @@ class LabelTests(unittest.TestCase):
         self.assertGreater(both["right"], 0.0)
         self.assertEqual(callouts.side_room([], 1.0, 1.0)["left"], 0.0)
         self.assertLess(callouts.side_room([("4x M3", "left")], 1.0, 4.0)["left"], room["left"])  # wide part
-
-    def test_rows_keep_the_image_page_shaped(self):
-        self.assertEqual(callouts.rows([1.0, 1.0]), [[0, 1]])
-        self.assertEqual(callouts.rows([1.5, 1.5, 1.5, 1.5, 1.0]), [[0, 1], [2, 3, 4]])   # shaded ends the last
-        self.assertEqual(callouts.rows([5.0, 1.0]), [[0, 1]])                    # the shaded view stays right
-        self.assertEqual(callouts.rows([5.0, 5.0, 1.0]), [[0], [1, 2]])
-        self.assertEqual(callouts.rows([5.0, 1.0], last_stays=False), [[0], [1]])
-        self.assertEqual(callouts.label_scale([1.5, 1.5, 1.5, 1.5, 1.0]), max(1.0, 4.08 / callouts.PAGE_ASPECT))
-        self.assertEqual(callouts.label_scale([10.0, 1.0]), callouts.MAX_SCALE)
 
     def test_label_side(self):
         self.assertEqual(callouts.label_side([0.2, 0.6]), "left")
