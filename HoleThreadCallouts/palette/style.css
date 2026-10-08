@@ -128,3 +128,6 @@ input[type=color] { padding: 1px; height: 24px; width: 40px; }
 .cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 .cfg-n { font-size: 10px; background: var(--line-soft); color: var(--muted); border-radius: 8px; padding: 0 5px; margin-left: 2px; }
 .copy-views { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-top: 6px; }
+
+.mcp-command { width: 100%; box-sizing: border-box; font: 10px/1.4 Consolas, monospace; resize: none; margin-top: 4px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--fg); }

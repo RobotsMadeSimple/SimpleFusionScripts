@@ -11,7 +11,7 @@
   var SIZES = ['M2.5', 'M3', 'M4', 'M5', 'M6', 'M8', 'M10'];
   var FALLBACK_COLORS = { 'M2': '#009E73', 'M2.5': '#0072B2', 'M3': '#F0E442', 'M4': '#56B4E9', 'M5': '#E69F00',
                           'M6': '#CC79A7', 'M8': '#D55E00', 'M10': '#0072B2' };
-  var NO_BUSY = ['ready', 'settings', 'stitched'];
+  var NO_BUSY = ['ready', 'settings', 'stitched', 'setMcp'];
 
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) {
@@ -298,6 +298,11 @@
     var s = state.settings || {};
     setValue($('height'), s.height);
     setValue($('gap'), s.gap);
+    var mcp = state.mcp || {};
+    $('mcpEnabled').checked = !!mcp.enabled;
+    $('mcpDetails').classList.toggle('hidden', !mcp.enabled);
+    $('mcpStatus').textContent = mcp.running ? 'Listening on port ' + mcp.port + '.' : (mcp.error || 'Not running.');
+    $('mcpCommand').value = 'claude mcp add --transport http holethreadcallouts ' + (mcp.url || '');
     var f = $('folder');
     if (s.folder) { f.textContent = s.folder; f.title = s.folder; f.classList.remove('hidden'); }
     else f.classList.add('hidden');
@@ -354,6 +359,13 @@
   $('error').addEventListener('click', function () { if (state && state.error) return; showError(''); });
   $('addThread').addEventListener('click', function () { send('addView', { kind: 'thread' }); });
   $('addShaded').addEventListener('click', function () { send('addView', { kind: 'shaded' }); });
+  $('mcpEnabled').addEventListener('change', function (e) { send('setMcp', { enabled: e.target.checked }); });
+  $('mcpCopy').addEventListener('click', function () {
+    var box = $('mcpCommand');
+    box.select();
+    try { document.execCommand('copy'); } catch (e) { /* (selected: Ctrl+C works too) */ }
+  });
+  $('mcpToken').addEventListener('click', function () { send('setMcp', { newToken: true }); });
   $('guess').addEventListener('change', function (e) { settings({ guess: e.target.checked }); });
   $('height').addEventListener('change', function (e) {
     var v = Math.max(100, Math.min(8000, Math.round(parseFloat(e.target.value) || 0)));

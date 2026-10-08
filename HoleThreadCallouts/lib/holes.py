@@ -60,21 +60,23 @@ def _p3(t):
 
 # ------------------------------------------------------------ the part
 
-def context(design):
-    """(component, occurrence or None): the activated component (its occurrence, for world
-    coordinates), else the root component."""
-    occ = _safe(lambda: design.activeOccurrence)
+def context(design, target=None):
+    """(component, occurrence or None): `target` (an occurrence, e.g. an agent's choice), else the
+    activated component (its occurrence, for world coordinates), else the root component."""
+    occ = target if target is not None else _safe(lambda: design.activeOccurrence)
     if occ is not None:
         return occ.component, occ
     return design.rootComponent, None
 
 
-def bodies(design):
-    comp, occ = context(design)
+def bodies(design, target=None):
+    comp, occ = context(design, target)
     out = [b for b in (occ.bRepBodies if occ is not None else comp.bRepBodies) if _safe(lambda: b.isSolid, True)]
     if not out and occ is None:                 # a part modelled as one component under the root
         for o in comp.allOccurrences:
             out.extend(b for b in o.bRepBodies if _safe(lambda: b.isSolid, True))
+    if target is not None:      # an agent's part: hidden or not, but only the bodies it has switched on
+        return [b for b in out if _safe(lambda: b.isLightBulbOn, True)]
     return [b for b in out if _safe(lambda: b.isVisible, True)]
 
 
@@ -124,10 +126,14 @@ def _hole_geometry(face):
         sign = 1 if _dot(_sub(c, mid), axis) >= 0 else -1
         openings.append((c, (axis[0] * sign, axis[1] * sign, axis[2] * sign)))
     # Key: the axis line (its point nearest the world origin) + direction + radius, rounded.
+    # (Rounded first, and -0.0 made 0.0: two faces of one hole -- e.g. a threaded and a plain part --
+    # differ in the last bits, which made "-0.000" and "0.000", or flipped the axis, and so two holes.)
     foot = _sub(origin, tuple(a * _dot(origin, axis) for a in axis))
-    flip = -1 if (axis[0], axis[1], axis[2]) < (0, 0, 0) else 1
+    tidy = tuple(round(a, 5) + 0.0 for a in axis)
+    flip = -1 if tidy < (0, 0, 0) else 1
     key = "{:.3f},{:.3f},{:.3f}|{:.3f},{:.3f},{:.3f}|{:.4f}".format(
-        foot[0], foot[1], foot[2], axis[0] * flip, axis[1] * flip, axis[2] * flip, radius)
+        *(round(v, 3) + 0.0 for v in (foot[0], foot[1], foot[2], tidy[0] * flip, tidy[1] * flip, tidy[2] * flip)),
+        radius)
     return {"key": key, "radius": radius, "axis": axis, "openings": openings, "face": face}
 
 
@@ -135,13 +141,13 @@ def _dist3(a, b):
     return math.sqrt(_dot(_sub(a, b), _sub(a, b)))
 
 
-def find(design, guess=True, marks=None):
+def find(design, guess=True, marks=None, target=None):
     """[hole] with {"id", "kind" ("thread"|"dowel"), "label", "source", "diameter" (mm),
     "radius" (cm), "axis", "openings"} -- only holes with a size (or marked as dowels)."""
     marks = marks or {}
-    comp, occ = context(design)
+    comp, occ = context(design, target)
     holes = {}
-    for body in bodies(design):
+    for body in bodies(design, target):
         for face in body.faces:
             try:
                 geo = _hole_geometry(face)
